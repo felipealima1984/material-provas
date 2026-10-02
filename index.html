@@ -469,6 +469,13 @@
 </head>
 <body>
 
+<!-- ══ DIAGNÓSTICO (visível em qualquer tela, inclusive no login) ══ -->
+<button id="diag-btn" onclick="diagToggle()" style="position:fixed;bottom:8px;left:8px;z-index:99999;background:#1a1d27;border:1px solid #2e3150;color:#6b7280;border-radius:20px;padding:4px 10px;font-size:0.68rem;opacity:0.55;">🐞 Diagnóstico</button>
+<div id="diag-panel" style="display:none;position:fixed;inset:0;z-index:99998;background:rgba(0,0,0,0.92);color:#e2e8f0;padding:16px;overflow:auto;font-family:monospace;font-size:0.72rem;white-space:pre-wrap;">
+  <button onclick="diagToggle()" style="position:fixed;top:10px;right:10px;background:#f87171;color:#fff;border:none;border-radius:20px;padding:6px 14px;font-size:0.8rem;">✕ Fechar</button>
+  <div id="diag-conteudo" style="margin-top:40px;"></div>
+</div>
+
 <h1>📚 Material de Provas — Nova Roma</h1>
 <p class="sub">Selecione o período · cadeira · unidade para estudar</p>
 <p style="font-size:0.72rem;color:var(--muted);margin-top:4px;">🕐 Última atualização: 02/10/2026</p>
@@ -4753,6 +4760,55 @@
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.117.2"></script>
 <script>
 
+// ══════════════════════════════════════════
+// DIAGNÓSTICO — captura qualquer erro, mesmo antes do login,
+// pra investigar problemas que só acontecem em celular/iPad.
+// ══════════════════════════════════════════
+const BUILD_VERSAO = '2026-10-02-diag1';
+window._diagLog = [];
+function diagRegistrar(origem, msg) {
+  window._diagLog.push('[' + new Date().toLocaleTimeString() + '] ' + origem + ': ' + msg);
+  if (window._diagLog.length > 30) window._diagLog.shift();
+}
+window.addEventListener('error', function(e) {
+  diagRegistrar('window.onerror', (e.message || '') + ' @ ' + (e.filename || '') + ':' + (e.lineno || '?'));
+});
+window.addEventListener('unhandledrejection', function(e) {
+  diagRegistrar('promise rejeitada', (e.reason && (e.reason.message || JSON.stringify(e.reason))) || String(e.reason));
+});
+function diagToggle() {
+  const painel = document.getElementById('diag-panel');
+  const abrindo = painel.style.display === 'none';
+  painel.style.display = abrindo ? 'block' : 'none';
+  if (!abrindo) return;
+  let crudInfo = 'CRUD ainda não inicializado';
+  try { crudInfo = 'períodos carregados: ' + (CRUD.periodos ? CRUD.periodos.length : 'n/d') + ' | pid atual: ' + CRUD.pid; } catch(e) {}
+  let sbInfo = 'variável sb inexistente';
+  try { sbInfo = (typeof sb !== 'undefined' && sb) ? 'cliente Supabase OK (criado)' : 'sb é null — SUPABASE_URL/KEY não bateram ou window.supabase não carregou'; } catch(e) { sbInfo = 'erro ao checar sb: ' + e.message; }
+  let supaScriptInfo = (typeof window.supabase === 'undefined')
+    ? '❌ window.supabase NÃO carregou (script da CDN falhou/bloqueado)'
+    : '✅ window.supabase carregou';
+  const texto = [
+    '=== DIAGNÓSTICO MATERIAL DE PROVAS ===',
+    'Hora: ' + new Date().toString(),
+    'URL: ' + location.href,
+    'User-Agent: ' + navigator.userAgent,
+    'Online (navigator.onLine): ' + navigator.onLine,
+    '',
+    '--- Supabase ---',
+    supaScriptInfo,
+    sbInfo,
+    crudInfo,
+    '',
+    '--- localStorage ---',
+    'mp_s: ' + (localStorage.getItem('mp_s') || '(vazio)'),
+    '',
+    '--- Log de erros capturados (' + window._diagLog.length + ') ---',
+    window._diagLog.length ? window._diagLog.join('\n') : '(nenhum erro capturado até agora)',
+  ].join('\n');
+  document.getElementById('diag-conteudo').textContent = texto;
+}
+
 // ── ESTADO ──
 // Usuários agora vivem no Supabase (tabela mp_usuarios) — ver seção SUPABASE no script abaixo.
 
@@ -6303,19 +6359,25 @@ async function mpGetUsers() {
 
 // ── Iniciar o app ──
 function iniciarApp() {
+  diagRegistrar('iniciarApp', 'iniciando, build=' + BUILD_VERSAO);
   try {
     const s = JSON.parse(localStorage.getItem('mp_s') || 'null');
     if (s && s.u === MP_ADMIN.u && s.r === 'admin') {
       _mpUser = { login: 'admin', role: 'admin' };
+      diagRegistrar('iniciarApp', 'sessão restaurada: admin');
       mpAposLogin();
       return;
     }
     if (s && s.r === 'viewer' && s.u) {
       _mpUser = { login: s.u, role: 'viewer', nome: s.nome || s.u };
+      diagRegistrar('iniciarApp', 'sessão restaurada: viewer ' + s.u);
       mpAposLogin();
       return;
     }
-  } catch(e) {}
+    diagRegistrar('iniciarApp', 'sem sessão salva — mostrando tela de login');
+  } catch(e) {
+    diagRegistrar('iniciarApp', 'ERRO ao restaurar sessão: ' + e.message);
+  }
   document.getElementById('mp-u').focus();
 }
 
@@ -6353,11 +6415,16 @@ async function mpLogin() {
 
 // ── Após login ──
 function mpAposLogin() {
-  document.getElementById('mp-login').classList.add('oculto');
-  document.getElementById('mp-topbar').classList.add('visivel');
-  document.getElementById('mp-topbar-user').textContent = '👤 ' + _mpUser.login;
-  document.getElementById('mp-admin-btn').style.display = (_mpUser.role === 'admin') ? 'inline-block' : 'none';
-  crudCarregarDoSupabase().then(crudRender);
+  diagRegistrar('mpAposLogin', 'iniciando para ' + (_mpUser && _mpUser.login));
+  try {
+    document.getElementById('mp-login').classList.add('oculto');
+    document.getElementById('mp-topbar').classList.add('visivel');
+    document.getElementById('mp-topbar-user').textContent = '👤 ' + _mpUser.login;
+    document.getElementById('mp-admin-btn').style.display = (_mpUser.role === 'admin') ? 'inline-block' : 'none';
+  } catch(e) {
+    diagRegistrar('mpAposLogin', 'ERRO síncrono (provável HTML desatualizado em cache): ' + e.message);
+  }
+  crudCarregarDoSupabase().then(crudRender).catch(function(e){ diagRegistrar('mpAposLogin', 'crudCarregarDoSupabase/crudRender rejeitou: ' + e.message); });
   if (_mpUser.role === 'viewer') {
     setTimeout(() => {
       document.querySelectorAll('.crud-add, .crud-del').forEach(el => el.style.display = 'none');
@@ -6464,7 +6531,8 @@ function crudU(){ const c=crudC(); return c&&c.unidades.find(u=>u.id===CRUD.uid)
 let _crudCarregando = false;
 async function crudCarregarDoSupabase(tentativa) {
   tentativa = tentativa || 1;
-  if (!sb) { mostrarToast('⚠️ Supabase não configurado — conteúdo pode não carregar.'); return; }
+  diagRegistrar('crudCarregarDoSupabase', 'chamado, tentativa ' + tentativa + ', sb=' + (typeof sb !== 'undefined' && !!sb));
+  if (!sb) { mostrarToast('⚠️ Supabase não configurado — conteúdo pode não carregar.'); diagRegistrar('crudCarregarDoSupabase', 'abortado: sb é null/undefined'); return; }
   if (_crudCarregando) return;
   _crudCarregando = true;
   esconderErroCarregamento();
@@ -6502,8 +6570,10 @@ async function crudCarregarDoSupabase(tentativa) {
     }
     CRUD = novoCrud;
     NATIVE_MAP = novoNativeMap;
+    diagRegistrar('crudCarregarDoSupabase', 'sucesso: ' + novoCrud.periodos.length + ' período(s) carregado(s)');
   } catch(e) {
     console.warn('crudCarregarDoSupabase:', e);
+    diagRegistrar('crudCarregarDoSupabase', 'ERRO tentativa ' + tentativa + ': ' + (e.message || JSON.stringify(e)));
     _crudCarregando = false;
     // Tenta mais 2 vezes automaticamente (rede instável em 4G/wifi fraco)
     // antes de desistir e mostrar erro — nunca apaga o que já estava em tela.
