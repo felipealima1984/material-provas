@@ -4747,11 +4747,11 @@
 </div>
 
 
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script>
 
 // ── ESTADO ──
-// Usuários cadastrados pelo admin (modificado via artifact.publish)
-var MP_USERS_DATA = {"users": [{"login": "bianca", "senha": "123456", "nome": "bianca", "criadoEm": "2026-10-02T15:16:47.817Z"}, {"login": "jonatha", "senha": "123456", "nome": "Jonatha", "criadoEm": "2026-10-02T15:58:49.070416Z"}, {"login": "carol", "senha": "123456", "nome": "Carol", "criadoEm": "2026-10-02T15:58:49.070416Z"}]};
+// Usuários agora vivem no Supabase (tabela mp_usuarios) — ver seção SUPABASE no script abaixo.
 
 const CADEIRAS = [
   { id: 0, nome: '⚖️ Execuções', data: '28/set' },
@@ -6261,86 +6261,45 @@ function binauralAtualizarUI(ativo) {
   }
 }
 
+// ══════════════════════════════════════════
+// SUPABASE — configuração
+// ══════════════════════════════════════════
+const SUPABASE_URL = '__COLE_SUA_URL_AQUI__';
+const SUPABASE_ANON_KEY = '__COLE_SUA_CHAVE_AQUI__';
+const sb = (typeof window.supabase !== 'undefined' && SUPABASE_URL.indexOf('COLE_SUA') === -1)
+  ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY)
+  : null;
+if (!sb) console.warn('⚠️ Supabase não configurado — preencha SUPABASE_URL e SUPABASE_ANON_KEY.');
 
 // ══════════════════════════════════════════
-// SISTEMA DE LOGIN — V2 (limpo)
+// SISTEMA DE LOGIN — Supabase (admin local + viewers no banco)
 // ══════════════════════════════════════════
 
 const MP_ADMIN = { u: 'admin', p: 'admin' };
-let _mpDB = null;
-let _mpDBReady = false;
-let _mpUser = null; // { login, role }
+let _mpUser = null; // { login, role, nome }
 
-async function mpInitDB() {
+// Busca um usuário (viewer) no Supabase pelo login
+async function mpBuscarUser(login) {
+  if (!sb) return null;
   try {
-    if (typeof claude === 'undefined') return;
-    const db = await claude.use('db');
-    if (db) { _mpDB = db; _mpDBReady = true; }
-  } catch(e) { console.warn('db:', e); }
+    const { data, error } = await sb.from('mp_usuarios').select('login,senha,nome,role').eq('login', login).maybeSingle();
+    if (error) { console.warn('supabase buscarUser:', error); return null; }
+    return data;
+  } catch(e) { console.warn('supabase buscarUser:', e); return null; }
 }
 
-// Usuários lidos do HTML embutido — funciona para qualquer visitante
-function mpBuscarUser(login) {
-  // Ler direto do HTML embutido — funciona para qualquer visitante
+// Lista usuários viewers (para o painel admin)
+async function mpGetUsers() {
+  if (!sb) return [];
   try {
-    if (MP_USERS_DATA && MP_USERS_DATA.users) {
-      const found = MP_USERS_DATA.users.find(x => x.login === login);
-      if (found) return found;
-    }
-  } catch(e) {}
-  // Fallback localStorage (mesmo browser do admin)
-  try {
-    const raw = localStorage.getItem('mp_users_v1');
-    if (raw) {
-      const list = JSON.parse(raw);
-      return list.find(x => x.login === login) || null;
-    }
-  } catch(e) {}
-  return null;
+    const { data, error } = await sb.from('mp_usuarios').select('login,nome,role').neq('login', 'admin').order('criado_em');
+    if (error) { console.warn('supabase getUsers:', error); return []; }
+    return data || [];
+  } catch(e) { console.warn('supabase getUsers:', e); return []; }
 }
-
-function mpGetUsers() {
-  try {
-    const raw = localStorage.getItem('mp_users_v1');
-    if (raw) return JSON.parse(raw);
-    return (MP_USERS_DATA && MP_USERS_DATA.users) ? MP_USERS_DATA.users : [];
-  } catch(e) { return []; }
-}
-
-async function mpSalvarUsers(users) {
-  try {
-    MP_USERS_DATA = { users };
-    localStorage.setItem('mp_users_v1', JSON.stringify(users));
-    // Republicar o HTML com os usuários embutidos — funciona para qualquer visitante
-    try {
-      const artifact = await claude.use('artifact');
-      if (artifact) {
-        const tag = 'var MP_USERS_DATA = ';
-        const html = document.documentElement.outerHTML;
-        const ini = html.indexOf(tag);
-        const fim = html.indexOf(';', ini);
-        if (ini > -1 && fim > -1) {
-          const novoHtml = html.substring(0, ini) + tag + JSON.stringify({ users }) + html.substring(fim);
-          await artifact.publish('<!DOCTYPE html>' + novoHtml);
-        }
-      }
-    } catch(e2) { console.warn('publish:', e2); }
-    return true;
-  } catch(e) { console.warn('salvar:', e); return false; }
-}
-
-function mpCarregarUsersStorage() {
-  try {
-    const raw = localStorage.getItem('mp_users_v1');
-    if (raw) MP_USERS_DATA = { users: JSON.parse(raw) };
-  } catch(e) {}
-}
-
-// _mpDB não usado — login via JSON embutido
 
 // ── Iniciar o app ──
 function iniciarApp() {
-  mpCarregarUsersStorage(); // carregar usuários salvos pelo admin
   try {
     const s = JSON.parse(localStorage.getItem('mp_s') || 'null');
     if (s && s.u === MP_ADMIN.u && s.r === 'admin') {
@@ -6348,13 +6307,10 @@ function iniciarApp() {
       mpAposLogin();
       return;
     }
-    if (s && s.r === 'viewer') {
-      const users = mpGetUsers();
-      if (users.find(x => x.login === s.u)) {
-        _mpUser = { login: s.u, role: 'viewer' };
-        mpAposLogin();
-        return;
-      }
+    if (s && s.r === 'viewer' && s.u) {
+      _mpUser = { login: s.u, role: 'viewer', nome: s.nome || s.u };
+      mpAposLogin();
+      return;
     }
   } catch(e) {}
   document.getElementById('mp-u').focus();
@@ -6369,7 +6325,7 @@ async function mpLogin() {
 
   if (!u || !p) { erro.textContent = 'Preencha usuário e senha.'; return; }
 
-  // Admin — 100% local, sem banco
+  // Admin — 100% local, sem banco (fallback sempre disponível)
   if (u === MP_ADMIN.u && p === MP_ADMIN.p) {
     _mpUser = { login: 'admin', role: 'admin' };
     try { localStorage.setItem('mp_s', JSON.stringify({ u: 'admin', r: 'admin' })); } catch(e) {}
@@ -6377,12 +6333,13 @@ async function mpLogin() {
     return;
   }
 
-  // Usuário comum — buscar no db, localStorage ou HTML
-  const found = mpBuscarUser(u);
-  const senhaOk = found && (found.senha === p || found.p === p);
+  // Viewer — busca no Supabase
+  erro.textContent = 'Verificando...';
+  const found = await mpBuscarUser(u);
+  const senhaOk = found && found.senha === p;
   if (senhaOk) {
     _mpUser = { login: u, role: 'viewer', nome: found.nome || u };
-    try { localStorage.setItem('mp_s', JSON.stringify({ u, r: 'viewer' })); } catch(e) {}
+    try { localStorage.setItem('mp_s', JSON.stringify({ u, r: 'viewer', nome: _mpUser.nome })); } catch(e) {}
     mpAposLogin();
     return;
   }
@@ -6391,35 +6348,20 @@ async function mpLogin() {
   document.getElementById('mp-p').focus();
 }
 
-
 // ── Após login ──
 function mpAposLogin() {
-  // Esconder login
   document.getElementById('mp-login').classList.add('oculto');
-  // Mostrar topbar
   document.getElementById('mp-topbar').classList.add('visivel');
   document.getElementById('mp-topbar-user').textContent = '👤 ' + _mpUser.login;
   if (_mpUser.role === 'admin') {
     document.getElementById('mp-admin-btn').style.display = 'inline-block';
   }
-  // Renderizar material
-  crudRender();
-  // Viewer: sincronizar banco e bloquear edição
+  crudCarregarDoSupabase().then(crudRender);
   if (_mpUser.role === 'viewer') {
-    mpSincDB();
+    setTimeout(() => {
+      document.querySelectorAll('.crud-add, .crud-del').forEach(el => el.style.display = 'none');
+    }, 300);
   }
-}
-
-async function mpSincDB() {
-  try {
-    if (!_mpDB) await mpInitDB();
-    if (!_mpDB) return;
-    const doc = await _mpDB.doc('mp_crud/estado').get();
-    if (doc && doc.periodos) { CRUD = doc; crudRender(); }
-  } catch(e) {}
-  setTimeout(() => {
-    document.querySelectorAll('.crud-add, .crud-del').forEach(el => el.style.display = 'none');
-  }, 300);
 }
 
 // ── Logout ──
@@ -6436,33 +6378,20 @@ function mpLogout() {
   setTimeout(() => document.getElementById('mp-u').focus(), 150);
 }
 
-// ── Salvar CRUD no banco ──
-// crudSalvar integrada abaixo
-
-// ── Gerenciar usuários ──
+// ── Gerenciar usuários (admin) ──
 async function mpAbrirAdmin() {
   document.getElementById('mp-admin-overlay').classList.add('aberto');
-  if (!_mpDB) await mpInitDB();
-  // Sincronizar usuários do db para localStorage
-  if (_mpDB) {
-    try {
-      const snap = await _mpDB.collection('mp_users').get();
-      if (snap && !snap.empty) {
-        const users = snap.docs.map(d => ({ login: d.id, ...d.data() }));
-        localStorage.setItem('mp_users_v1', JSON.stringify(users));
-      }
-    } catch(e) {}
-  }
-  mpCarregarUsers();
+  await mpCarregarUsers();
 }
 function mpFecharAdmin() {
   document.getElementById('mp-admin-overlay').classList.remove('aberto');
   document.getElementById('mp-admin-erro').textContent = '';
 }
 
-function mpCarregarUsers() {
+async function mpCarregarUsers() {
   const lista = document.getElementById('mp-user-list');
-  const users = mpGetUsers();
+  lista.innerHTML = '<div style="color:#6b7280;font-size:0.8rem;">Carregando...</div>';
+  const users = await mpGetUsers();
   if (!users.length) {
     lista.innerHTML = '<div style="color:#6b7280;font-size:0.8rem;">Nenhum usuário cadastrado ainda.</div>';
     return;
@@ -6476,7 +6405,7 @@ function mpCarregarUsers() {
     delBtn.textContent = '✕';
     delBtn.onclick = (function(login){ return function(){ mpRemoverUser(login); }; })(u.login);
     const nomeSpan = document.createElement('span');
-    nomeSpan.innerHTML = '\ud83d\udc64 <strong>' + (u.nome || '') + '</strong> <span style="color:var(--muted);font-size:0.78rem;">' + u.login + '</span>';
+    nomeSpan.innerHTML = '👤 <strong>' + (u.nome || '') + '</strong> <span style="color:var(--muted);font-size:0.78rem;">' + u.login + '</span>';
     row.appendChild(nomeSpan);
     row.appendChild(delBtn);
     lista.appendChild(row);
@@ -6493,66 +6422,79 @@ async function mpAdicionarUser() {
   if (!u || !p) { erro.textContent = 'Preencha login e senha.'; return; }
   if (u === 'admin') { erro.textContent = 'Login reservado.'; return; }
   if (u.length < 3) { erro.textContent = 'Login muito curto (mín. 3).'; return; }
-  const users = mpGetUsers();
-  if (users.find(x => x.login === u)) { erro.textContent = 'Login já existe.'; return; }
-  users.push({ login: u, senha: p, nome, criadoEm: new Date().toISOString() });
-  const ok = await mpSalvarUsers(users);
-  if (ok) {
+  if (!sb) { erro.textContent = 'Supabase não configurado.'; return; }
+  const { error } = await sb.from('mp_usuarios').insert({ login: u, senha: p, nome, role: 'viewer' });
+  if (!error) {
     document.getElementById('mp-nn').value = '';
     document.getElementById('mp-nu').value = '';
     document.getElementById('mp-np').value = '';
-    mostrarToast('✅ ' + nome + ' adicionado! Página salva.');
+    mostrarToast('✅ ' + nome + ' adicionado!');
     mpCarregarUsers();
   } else {
-    erro.textContent = 'Erro ao salvar. Verifique as permissões.';
+    erro.textContent = (error.message || '').includes('duplicate') ? 'Login já existe.' : 'Erro ao salvar: ' + error.message;
   }
 }
 
 async function mpRemoverUser(login) {
-  const users = mpGetUsers().filter(x => x.login !== login);
-  const ok = await mpSalvarUsers(users);
-  if (ok) {
+  if (!sb) return;
+  const { error } = await sb.from('mp_usuarios').delete().eq('login', login);
+  if (!error) {
     mostrarToast('✅ ' + login + ' removido.');
     mpCarregarUsers();
   } else {
-    document.getElementById('mp-admin-erro').textContent = 'Erro ao remover.';
+    document.getElementById('mp-admin-erro').textContent = 'Erro ao remover: ' + error.message;
   }
 }
-// ── INIT ──
-// Inicialização controlada pelo CRUD
-
 
 // ══════════════════════════════════════════
-// CRUD — PERÍODOS, CADEIRAS, UNIDADES
+// CRUD — PERÍODOS, CADEIRAS, UNIDADES (Supabase)
 // ══════════════════════════════════════════
-var NATIVE_MAP = {p1:{c0:0,c1:1,c2:2,c3:3,c4:4}};
+var NATIVE_MAP = {};
+var NATIVE_SEED_NOMES = ['⚖️ Execuções','🏢 TGE','🔍 Proc. Penal','🚔 Crimes 2','👨‍👩‍👧 Família'];
 
-function crudCarregar() {
-  try { const r = localStorage.getItem('material_crud_v2'); if(r) return JSON.parse(r); } catch(e){}
-  return {
-    periodos:[{id:'p1',nome:'5º Período',cadeiras:[
-      {id:'c0',nome:'⚖️ Execuções',data:'28/set',unidades:[{id:'u0',nome:'N1',nativa:true}]},
-      {id:'c1',nome:'🏢 TGE',data:'29/set',unidades:[{id:'u0',nome:'N1',nativa:true}]},
-      {id:'c2',nome:'🔍 Proc. Penal',data:'30/set',unidades:[{id:'u0',nome:'N1',nativa:true}]},
-      {id:'c3',nome:'🚔 Crimes 2',data:'01/out',unidades:[{id:'u0',nome:'N1',nativa:true}]},
-      {id:'c4',nome:'👨‍👩‍👧 Família',data:'02/out',unidades:[{id:'u0',nome:'N1',nativa:true}]}
-    ]}],
-    pid:'p1', cid:null, uid:null
-  };
-}
-function crudSalvar(){
-  try{localStorage.setItem('material_crud_v2',JSON.stringify(CRUD));}catch(e){}
-  if(_mpDB && _mpUser && _mpUser.role==='admin'){
-    _mpDB.doc('mp_crud/estado').set(CRUD).catch(function(){});
-  }
-}
-let CRUD = crudCarregar();
-let _nid = Date.now();
-function nuid(){ return 'x'+(++_nid); }
+let CRUD = { periodos: [], pid: null, cid: null, uid: null };
 
 function crudP(){ return CRUD.periodos.find(p=>p.id===CRUD.pid)||CRUD.periodos[0]; }
 function crudC(){ const p=crudP(); return p&&p.cadeiras.find(c=>c.id===CRUD.cid)||null; }
 function crudU(){ const c=crudC(); return c&&c.unidades.find(u=>u.id===CRUD.uid)||null; }
+
+// Carrega periodos/cadeiras/unidades do Supabase e monta a árvore em memória
+async function crudCarregarDoSupabase() {
+  if (!sb) { mostrarToast('⚠️ Supabase não configurado — conteúdo pode não carregar.'); return; }
+  try {
+    const [{data:periodos}, {data:cadeiras}, {data:unidades}] = await Promise.all([
+      sb.from('mp_periodos').select('*').order('ordem'),
+      sb.from('mp_cadeiras').select('*').order('ordem'),
+      sb.from('mp_unidades').select('*').order('ordem'),
+    ]);
+    const novoCrud = { periodos: [], pid: CRUD.pid, cid: CRUD.cid, uid: CRUD.uid };
+    const novoNativeMap = {};
+    (periodos||[]).forEach(per => {
+      const cadsDoPer = (cadeiras||[]).filter(c => c.periodo_id === per.id);
+      const cadsObj = cadsDoPer.map(cad => {
+        const unidsDoCad = (unidades||[]).filter(u => u.cadeira_id === cad.id);
+        const idxNativo = NATIVE_SEED_NOMES.indexOf(cad.nome);
+        if (idxNativo > -1) {
+          novoNativeMap[per.id] = novoNativeMap[per.id] || {};
+          novoNativeMap[per.id][cad.id] = idxNativo;
+        }
+        return {
+          id: cad.id, nome: cad.nome, data: cad.data_prova,
+          unidades: unidsDoCad.map(u => ({ id: u.id, nome: u.nome, html: u.html, nativa: u.nativa }))
+        };
+      });
+      novoCrud.periodos.push({ id: per.id, nome: per.nome, cadeiras: cadsObj });
+    });
+    if (!novoCrud.pid || !novoCrud.periodos.find(p=>p.id===novoCrud.pid)) {
+      novoCrud.pid = novoCrud.periodos[0] ? novoCrud.periodos[0].id : null;
+    }
+    CRUD = novoCrud;
+    NATIVE_MAP = novoNativeMap;
+  } catch(e) {
+    console.warn('crudCarregarDoSupabase:', e);
+    mostrarToast('⚠️ Erro ao carregar do Supabase.');
+  }
+}
 
 function crudRender(){
   const p=crudP(), c=crudC(), u=crudU();
@@ -6567,13 +6509,13 @@ function crudRender(){
       if(CRUD.periodos.length>1){
         const d=document.createElement('button');
         d.className='crud-del'; d.textContent='✕'; d.title='Remover';
-        d.onclick=e=>{e.stopPropagation();if(confirm('Remover período?')){
-          CRUD.periodos=CRUD.periodos.filter(x=>x.id!==per.id);
-          if(CRUD.pid===per.id){CRUD.pid=CRUD.periodos[0]?.id;CRUD.cid=null;CRUD.uid=null;}
-          crudSalvar();crudRender();}};
+        d.onclick=async e=>{e.stopPropagation();if(confirm('Remover período?')){
+          await sb.from('mp_periodos').delete().eq('id', per.id);
+          if(CRUD.pid===per.id){CRUD.cid=null;CRUD.uid=null;}
+          await crudCarregarDoSupabase();crudRender();}};
         btn.appendChild(d);
       }
-      btn.onclick=()=>{CRUD.pid=per.id;CRUD.cid=null;CRUD.uid=null;crudSalvar();crudRender();};
+      btn.onclick=()=>{CRUD.pid=per.id;CRUD.cid=null;CRUD.uid=null;crudRender();};
       pBar.appendChild(btn);
     });
     const a=document.createElement('button');
@@ -6591,12 +6533,12 @@ function crudRender(){
       btn.textContent=cad.nome+(cad.data?' · '+cad.data:'');
       const d=document.createElement('button');
       d.className='crud-del';d.textContent='✕';d.title='Remover';
-      d.onclick=e=>{e.stopPropagation();if(confirm('Remover cadeira?')){
-        p.cadeiras=p.cadeiras.filter(x=>x.id!==cad.id);
+      d.onclick=async e=>{e.stopPropagation();if(confirm('Remover cadeira?')){
+        await sb.from('mp_cadeiras').delete().eq('id', cad.id);
         if(CRUD.cid===cad.id){CRUD.cid=null;CRUD.uid=null;}
-        crudSalvar();crudRender();}};
+        await crudCarregarDoSupabase();crudRender();}};
       btn.appendChild(d);
-      btn.onclick=()=>{CRUD.cid=cad.id;CRUD.uid=cad.unidades[0]?.id||null;crudSalvar();crudRender();};
+      btn.onclick=()=>{CRUD.cid=cad.id;CRUD.uid=cad.unidades[0]?.id||null;crudRender();};
       cBar.appendChild(btn);
     });
     const a=document.createElement('button');
@@ -6620,13 +6562,13 @@ function crudRender(){
         if(cad.unidades.length>1){
           const d=document.createElement('button');
           d.className='crud-del';d.textContent='✕';
-          d.onclick=e=>{e.stopPropagation();if(confirm('Remover unidade?')){
-            cad.unidades=cad.unidades.filter(x=>x.id!==un.id);
-            if(CRUD.uid===un.id)CRUD.uid=cad.unidades[0]?.id||null;
-            crudSalvar();crudRender();}};
+          d.onclick=async e=>{e.stopPropagation();if(confirm('Remover unidade?')){
+            await sb.from('mp_unidades').delete().eq('id', un.id);
+            if(CRUD.uid===un.id)CRUD.uid=null;
+            await crudCarregarDoSupabase();crudRender();}};
           btn.appendChild(d);
         }
-        btn.onclick=()=>{CRUD.uid=un.id;crudSalvar();crudRender();};
+        btn.onclick=()=>{CRUD.uid=un.id;crudRender();};
         uBar.appendChild(btn);
       });
       const a=document.createElement('button');
@@ -6681,47 +6623,56 @@ function crudModal(tipo,parentId){
     t.textContent='＋ Novo Período';
     c1.placeholder='Ex: 6º Período';c1.value='';
     c2w.style.display='none';
-    btn.onclick=()=>{
-      const n=c1.value.trim();if(!n)return;
-      CRUD.periodos.push({id:nuid(),nome:n,cadeiras:[]});
-      CRUD.pid=CRUD.periodos[CRUD.periodos.length-1].id;CRUD.cid=null;CRUD.uid=null;
-      crudSalvar();crudRender();crudFechar();};
+    btn.onclick=async ()=>{
+      const n=c1.value.trim();if(!n||!sb)return;
+      const { data, error } = await sb.from('mp_periodos').insert({ nome:n, ordem: CRUD.periodos.length }).select().single();
+      if(error){mostrarToast('❌ '+error.message);return;}
+      await crudCarregarDoSupabase();
+      CRUD.pid=data.id;CRUD.cid=null;CRUD.uid=null;
+      crudRender();crudFechar();};
   } else if(tipo==='cadeira'){
     t.textContent='＋ Nova Cadeira';
     c1.placeholder='Ex: 🏛 Direito Constitucional';c1.value='';
     c2.placeholder='Ex: 15/mar';c2.value='';
     c2w.style.display='flex';
     document.getElementById('crud-c2-label').textContent='Data da prova (opcional)';
-    btn.onclick=()=>{
-      const n=c1.value.trim();if(!n)return;
+    btn.onclick=async ()=>{
+      const n=c1.value.trim();if(!n||!sb)return;
       const p=CRUD.periodos.find(x=>x.id===parentId);if(!p)return;
-      const cad={id:nuid(),nome:n,data:c2.value.trim(),unidades:[{id:nuid(),nome:'N1',html:''}]};
-      p.cadeiras.push(cad);CRUD.cid=cad.id;CRUD.uid=cad.unidades[0].id;
-      crudSalvar();crudRender();crudFechar();};
+      const ordem=p.cadeiras.length;
+      const { data:cad, error } = await sb.from('mp_cadeiras').insert({ periodo_id:parentId, nome:n, data_prova:c2.value.trim(), ordem }).select().single();
+      if(error){mostrarToast('❌ '+error.message);return;}
+      const { error: e2 } = await sb.from('mp_unidades').insert({ cadeira_id: cad.id, nome:'N1', html:'', nativa:false, ordem:0 });
+      if(e2){mostrarToast('❌ '+e2.message);}
+      await crudCarregarDoSupabase();
+      CRUD.cid=cad.id; const novoCad=crudC(); CRUD.uid=novoCad&&novoCad.unidades[0]?novoCad.unidades[0].id:null;
+      crudRender();crudFechar();};
   } else if(tipo==='unidade'){
     t.textContent='＋ Nova Unidade';
     c1.placeholder='Ex: N2, N3';c1.value='';
     c2w.style.display='none';
-    btn.onclick=()=>{
-      const n=c1.value.trim();if(!n)return;
+    btn.onclick=async ()=>{
+      const n=c1.value.trim();if(!n||!sb)return;
       const p=crudP();const c=p?.cadeiras.find(x=>x.id===parentId);if(!c)return;
-      const u={id:nuid(),nome:n,html:''};
-      c.unidades.push(u);CRUD.uid=u.id;
-      crudSalvar();crudRender();crudFechar();};
+      const ordem=c.unidades.length;
+      const { data:u, error } = await sb.from('mp_unidades').insert({ cadeira_id:parentId, nome:n, html:'', nativa:false, ordem }).select().single();
+      if(error){mostrarToast('❌ '+error.message);return;}
+      await crudCarregarDoSupabase();
+      CRUD.uid=u.id;
+      crudRender();crudFechar();};
   }
   m.classList.add('aberto');c1.focus();
 }
 function crudFechar(){document.getElementById('crud-modal').classList.remove('aberto');}
 
 // Expor para Claude injetar conteúdo via publicação
-window.crudInjetarConteudo=function(pid,cid,uid,html){
-  const p=CRUD.periodos.find(x=>x.id===pid);
-  if(!p)return;
-  const c=p.cadeiras.find(x=>x.id===cid);
-  if(!c)return;
-  const u=c.unidades.find(x=>x.id===uid);
-  if(u){u.html=html;crudSalvar();crudRender();}
+window.crudInjetarConteudo=async function(pid,cid,uid,html){
+  if(!sb)return;
+  await sb.from('mp_unidades').update({ html }).eq('id', uid);
+  await crudCarregarDoSupabase();
+  crudRender();
 };
+
 
 
 // INIT
@@ -6729,8 +6680,6 @@ document.addEventListener('DOMContentLoaded', async function() {
   for(let i=0;i<5;i++){const e=document.getElementById('cadeira-'+i);if(e)e.style.display='none';}
   document.getElementById('crud-modal').addEventListener('click',function(e){if(e.target===this)crudFechar();});
   document.getElementById('mp-admin-overlay').addEventListener('click',function(e){if(e.target===this)mpFecharAdmin();});
-  // Iniciar db em background — não bloqueia o login
-  mpInitDB();
   iniciarApp();
 });
 </script>
