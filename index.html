@@ -6353,9 +6353,7 @@ function mpAposLogin() {
   document.getElementById('mp-login').classList.add('oculto');
   document.getElementById('mp-topbar').classList.add('visivel');
   document.getElementById('mp-topbar-user').textContent = '👤 ' + _mpUser.login;
-  if (_mpUser.role === 'admin') {
-    document.getElementById('mp-admin-btn').style.display = 'inline-block';
-  }
+  document.getElementById('mp-admin-btn').style.display = (_mpUser.role === 'admin') ? 'inline-block' : 'none';
   crudCarregarDoSupabase().then(crudRender);
   if (_mpUser.role === 'viewer') {
     setTimeout(() => {
@@ -6373,6 +6371,7 @@ function mpLogout() {
   document.getElementById('mp-u').value = '';
   document.getElementById('mp-p').value = '';
   document.getElementById('mp-login-erro').textContent = '';
+  document.getElementById('mp-admin-btn').style.display = 'none';
   for (let i = 0; i < 5; i++) { const e = document.getElementById('cadeira-'+i); if(e) e.style.display='none'; }
   document.getElementById('crud-area').style.display = 'none';
   setTimeout(() => document.getElementById('mp-u').focus(), 150);
