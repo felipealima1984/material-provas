@@ -3,6 +3,9 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
+<meta http-equiv="Expires" content="0">
 <title>Material de Provas — Nova Roma</title>
 <style>
 
@@ -4747,7 +4750,7 @@
 </div>
 
 
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.117.2"></script>
 <script>
 
 // ── ESTADO ──
@@ -6458,14 +6461,24 @@ function crudC(){ const p=crudP(); return p&&p.cadeiras.find(c=>c.id===CRUD.cid)
 function crudU(){ const c=crudC(); return c&&c.unidades.find(u=>u.id===CRUD.uid)||null; }
 
 // Carrega periodos/cadeiras/unidades do Supabase e monta a árvore em memória
-async function crudCarregarDoSupabase() {
+let _crudCarregando = false;
+async function crudCarregarDoSupabase(tentativa) {
+  tentativa = tentativa || 1;
   if (!sb) { mostrarToast('⚠️ Supabase não configurado — conteúdo pode não carregar.'); return; }
+  if (_crudCarregando) return;
+  _crudCarregando = true;
+  esconderErroCarregamento();
   try {
-    const [{data:periodos}, {data:cadeiras}, {data:unidades}] = await Promise.all([
+    const [rPeriodos, rCadeiras, rUnidades] = await Promise.all([
       sb.from('mp_periodos').select('*').order('ordem'),
       sb.from('mp_cadeiras').select('*').order('ordem'),
       sb.from('mp_unidades').select('*').order('ordem'),
     ]);
+    // Checagem explícita de erro — antes disso, um erro de rede/API era
+    // tratado como "lista vazia" e apagava as cadeiras já carregadas em tela.
+    const erro = rPeriodos.error || rCadeiras.error || rUnidades.error;
+    if (erro) throw erro;
+    const periodos = rPeriodos.data, cadeiras = rCadeiras.data, unidades = rUnidades.data;
     const novoCrud = { periodos: [], pid: CRUD.pid, cid: CRUD.cid, uid: CRUD.uid };
     const novoNativeMap = {};
     (periodos||[]).forEach(per => {
@@ -6491,8 +6504,39 @@ async function crudCarregarDoSupabase() {
     NATIVE_MAP = novoNativeMap;
   } catch(e) {
     console.warn('crudCarregarDoSupabase:', e);
-    mostrarToast('⚠️ Erro ao carregar do Supabase.');
+    _crudCarregando = false;
+    // Tenta mais 2 vezes automaticamente (rede instável em 4G/wifi fraco)
+    // antes de desistir e mostrar erro — nunca apaga o que já estava em tela.
+    if (tentativa < 3) {
+      await new Promise(res => setTimeout(res, 800 * tentativa));
+      return crudCarregarDoSupabase(tentativa + 1);
+    }
+    mostrarErroCarregamento();
+    _crudCarregando = false;
+    return;
   }
+  _crudCarregando = false;
+}
+
+function mostrarErroCarregamento() {
+  const pBar = document.getElementById('bar-periodos');
+  if (!pBar || CRUD.periodos.length > 0) return; // só mostra se não há nada já exibido
+  let aviso = document.getElementById('crud-erro-rede');
+  if (!aviso) {
+    aviso = document.createElement('button');
+    aviso.id = 'crud-erro-rede';
+    aviso.className = 'crud-add';
+    aviso.style.borderColor = 'var(--red)';
+    aviso.style.color = 'var(--red)';
+    aviso.onclick = () => crudCarregarDoSupabase().then(crudRender);
+    pBar.parentElement.insertBefore(aviso, pBar.nextSibling);
+  }
+  aviso.textContent = '⚠️ Falha ao carregar — toque para tentar novamente';
+  aviso.style.display = '';
+}
+function esconderErroCarregamento() {
+  const aviso = document.getElementById('crud-erro-rede');
+  if (aviso) aviso.style.display = 'none';
 }
 
 function crudRender(){
