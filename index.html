@@ -4773,9 +4773,7 @@
 
 </div>
 
-<p style="text-align:center;color:var(--muted);font-size:0.78rem;margin-top:36px;padding-bottom:20px">
-  v1.69 - 02/10/2026 - [18:38:53]
-</p>
+<p id="app-versao-rodape" style="text-align:center;color:var(--muted);font-size:0.78rem;margin-top:36px;padding-bottom:20px"></p>
 
 <!-- ÁREA DE CONTEÚDO CUSTOMIZADO -->
 <div id="crud-area" style="display:none;margin-top:24px;"></div>
@@ -4852,6 +4850,64 @@
 // pra investigar problemas que só acontecem em celular/iPad.
 // ══════════════════════════════════════════
 const BUILD_VERSAO = '2026-10-02-diag1';
+
+// ══════════════════════════════════════════
+// VERSÃO E NOVIDADES (changelog dispensável) — portado de
+// js/versionNotes.js e js/whatsNew.js (Mirante). APP_VERSION é a fonte
+// única pro rodapé e pro aviso de novidades — atualizar aqui a cada
+// publish em vez de editar o HTML do rodapé direto.
+// ══════════════════════════════════════════
+const APP_VERSION = '1.73';
+const VERSION_NOTES = [
+  { version: '1.70', notes: 'leitor de voz reescrito: destaque de palavra em tempo real, barra de progresso arrastável (seek de verdade) e retomada exata da posição após um refresh (nunca autoplay).' },
+  { version: '1.71', notes: 'novo painel de Revisão Espaçada (1-3-7-21 dias): cadastre um assunto estudado e o sistema monta o calendário de revisões sozinho, com streak de dias em dia.' },
+  { version: '1.72', notes: 'novo Timer (Pomodoro e cronômetro), com botão flutuante — sobrevive a fechar a aba.' },
+  { version: '1.73', notes: 'esse aviso de novidades que você está lendo agora.' },
+];
+function compareVersions(a, b) {
+  const pa = String(a).split('.').map(Number), pb = String(b).split('.').map(Number);
+  const len = Math.max(pa.length, pb.length);
+  for (let i = 0; i < len; i++) {
+    const diff = (pa[i] || 0) - (pb[i] || 0);
+    if (diff !== 0) return diff > 0 ? 1 : -1;
+  }
+  return 0;
+}
+function notesSince(lastSeen) {
+  if (!lastSeen) return [];
+  return VERSION_NOTES.filter(n => compareVersions(n.version, lastSeen) > 0).sort((a, b) => compareVersions(a.version, b.version));
+}
+function initWhatsNew() {
+  const agora = new Date().toLocaleString('pt-BR', { day:'2-digit', month:'2-digit', year:'numeric', hour:'2-digit', minute:'2-digit', second:'2-digit' });
+  const rodapeTxt = `v${APP_VERSION} - ${agora}`;
+  const rodape = document.getElementById('app-versao-rodape');
+  if (rodape) rodape.textContent = rodapeTxt;
+  const versao = document.getElementById('app-versao');
+  if (versao) versao.textContent = rodapeTxt;
+
+  const LAST_SEEN_KEY = 'mp_lastSeenVersion';
+  let lastSeen;
+  try { lastSeen = localStorage.getItem(LAST_SEEN_KEY); } catch (e) { lastSeen = null; }
+  if (lastSeen === null) {
+    try { localStorage.setItem(LAST_SEEN_KEY, APP_VERSION); } catch (e) {}
+    return; // instalação nova — sem novidade a anunciar
+  }
+  if (lastSeen === APP_VERSION) return;
+  const notes = notesSince(lastSeen);
+  if (!notes.length) { try { localStorage.setItem(LAST_SEEN_KEY, APP_VERSION); } catch (e) {} return; }
+
+  const banner = document.getElementById('whats-new-banner');
+  const lista = document.getElementById('whats-new-list');
+  const dismiss = document.getElementById('whats-new-dismiss');
+  if (!banner || !lista || !dismiss) return;
+  lista.innerHTML = notes.map(n => `<li><strong>v${n.version}:</strong> ${n.notes}</li>`).join('');
+  banner.hidden = false;
+  dismiss.addEventListener('click', () => {
+    banner.hidden = true;
+    try { localStorage.setItem(LAST_SEEN_KEY, APP_VERSION); } catch (e) {}
+  });
+}
+
 window._diagLog = [];
 function diagRegistrar(origem, msg) {
   window._diagLog.push('[' + new Date().toLocaleTimeString() + '] ' + origem + ': ' + msg);
@@ -7415,6 +7471,7 @@ document.addEventListener('DOMContentLoaded', async function() {
   document.getElementById('timer-modal').addEventListener('click',function(e){if(e.target===this)fecharTimer();});
   timerCarregar();
   timerIniciarLoop();
+  initWhatsNew();
   iniciarApp();
 });
 </script>
@@ -7471,7 +7528,16 @@ document.addEventListener('DOMContentLoaded', async function() {
 </div>
 
 <!-- ══ RODAPÉ — VERSÃO ══ -->
-<div id="app-versao" style="position:fixed;bottom:8px;right:10px;z-index:9000;font-size:0.65rem;color:#6b7280;opacity:0.6;font-family:monospace;pointer-events:none;">v1.69 - 02/10/2026 - [18:38:53]</div>
+<div id="app-versao" style="position:fixed;bottom:8px;right:10px;z-index:9000;font-size:0.65rem;color:#6b7280;opacity:0.6;font-family:monospace;pointer-events:none;"></div>
+
+<!-- ══ NOVIDADES (changelog dispensável) ══ -->
+<div id="whats-new-banner" hidden style="position:fixed;bottom:8px;left:50%;transform:translateX(-50%);z-index:9500;max-width:min(480px,92vw);background:var(--surface);border:1px solid var(--accent);border-radius:12px;padding:12px 16px;box-shadow:0 8px 32px rgba(0,0,0,0.25);">
+  <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:6px;">
+    <strong style="color:var(--accent);font-size:0.85rem;">✨ Novidades</strong>
+    <button id="whats-new-dismiss" style="background:none;border:1px solid var(--border);color:var(--muted);border-radius:16px;padding:2px 10px;font-size:0.72rem;cursor:pointer;">✕</button>
+  </div>
+  <ul id="whats-new-list" style="margin:0;padding-left:18px;font-size:0.78rem;color:var(--text);line-height:1.6;"></ul>
+</div>
 
 </body>
 </html>
