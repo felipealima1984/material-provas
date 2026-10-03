@@ -4868,12 +4868,14 @@ const BUILD_VERSAO = '2026-10-02-diag1';
 // única pro rodapé e pro aviso de novidades — atualizar aqui a cada
 // publish em vez de editar o HTML do rodapé direto.
 // ══════════════════════════════════════════
-const APP_VERSION = '1.73';
+const APP_VERSION = '1.75';
 const VERSION_NOTES = [
   { version: '1.70', notes: 'leitor de voz reescrito: destaque de palavra em tempo real, barra de progresso arrastável (seek de verdade) e retomada exata da posição após um refresh (nunca autoplay).' },
   { version: '1.71', notes: 'novo painel de Revisão Espaçada (1-3-7-21 dias): cadastre um assunto estudado e o sistema monta o calendário de revisões sozinho, com streak de dias em dia.' },
   { version: '1.72', notes: 'novo Timer (Pomodoro e cronômetro), com botão flutuante — sobrevive a fechar a aba.' },
-  { version: '1.73', notes: 'esse aviso de novidades que você está lendo agora.' },
+  { version: '1.73', notes: 'aviso de novidades dispensável — esse mesmo aviso que você está lendo agora.' },
+  { version: '1.74', notes: 'bastidores: testes automatizados pra lógica de revisão e changelog, sem efeito visível no app.' },
+  { version: '1.75', notes: 'faixa "Resumo do dia" com revisões pendentes, abaixo do cabeçalho, com aviso do navegador quando há pendência.' },
 ];
 function notesSince(lastSeen) { return VersionNotes.notesSince(VERSION_NOTES, lastSeen); }
 function initWhatsNew() {
