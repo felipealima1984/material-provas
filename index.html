@@ -425,6 +425,7 @@
     content:''; position:absolute; bottom:4px; width:5px; height:5px; border-radius:50%; background:var(--yellow); }
   .cal-day.is-selected.has-evento::after { background:#fff; }
   .cal-agenda h3 { margin-top:0; }
+  .cal-agenda-header { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:10px; flex-wrap:wrap; }
 
   /* ══ TIMER POMODORO/CRONÔMETRO ══ */
   .timer-btn {
@@ -4892,7 +4893,7 @@ const BUILD_VERSAO = '2026-10-02-diag1';
 // única pro rodapé e pro aviso de novidades — atualizar aqui a cada
 // publish em vez de editar o HTML do rodapé direto.
 // ══════════════════════════════════════════
-const APP_VERSION = '1.78';
+const APP_VERSION = '1.79';
 const VERSION_NOTES = [
   { version: '1.70', notes: 'leitor de voz reescrito: destaque de palavra em tempo real, barra de progresso arrastável (seek de verdade) e retomada exata da posição após um refresh (nunca autoplay).' },
   { version: '1.71', notes: 'novo painel de Revisão Espaçada (1-3-7-21 dias): cadastre um assunto estudado e o sistema monta o calendário de revisões sozinho, com streak de dias em dia.' },
@@ -4903,6 +4904,7 @@ const VERSION_NOTES = [
   { version: '1.76', notes: 'Google Calendar (opcional): conecte sua conta no painel de Revisão Espaçada e cada assunto cadastrado cria lembretes automáticos nas 4 datas de revisão.' },
   { version: '1.77', notes: 'nova aba "Calendário" na Revisão Espaçada: veja os eventos do Google Calendar direto no app, já com o resumo (notas) do assunto — dá pra estudar de qualquer lugar.' },
   { version: '1.78', notes: 'a aba Calendário virou um calendário de verdade: grade do mês, hoje destacado, clique num dia pra ver as atividades daquele dia.' },
+  { version: '1.79', notes: 'agora dá pra criar, editar e excluir atividades direto na aba Calendário — não precisa mais abrir o Google Calendar separado.' },
 ];
 function notesSince(lastSeen) { return VersionNotes.notesSince(VERSION_NOTES, lastSeen); }
 function initWhatsNew() {
@@ -6816,6 +6818,21 @@ function calBuildMonthCells(year, month) {
   return cells;
 }
 
+// null = nenhum form aberto | 'novo' = criando atividade | <eventId> = editando esse evento
+let calFormAberto = null;
+
+function calFormHtml(eventId, tituloAtual, notasAtual) {
+  const salvarCall = eventId ? `calSalvarEdicao('${eventId}')` : 'calCriarAtividade()';
+  return `<div class="revisao-form" style="margin-bottom:12px;">
+    <input type="text" id="cal-form-titulo" placeholder="Título da atividade" value="${escRv(tituloAtual)}">
+    <textarea id="cal-form-notas" placeholder="Notas/resumo (opcional — some aqui e no Google Calendar)" rows="2">${escRv(notasAtual)}</textarea>
+    <div style="display:flex;gap:8px;">
+      <button type="button" class="revisao-abrir-btn" style="margin-top:0;" onclick="${salvarCall}">${eventId ? '💾 Salvar' : '＋ Criar'}</button>
+      <button type="button" class="speed-btn" onclick="calFecharForm()">Cancelar</button>
+    </div>
+  </div>`;
+}
+
 function calRenderAgenda() {
   let html = '<div class="cal-agenda">';
   if (!calSelectedDateKey) {
@@ -6824,24 +6841,102 @@ function calRenderAgenda() {
   }
   const idx = gcalEventIndex();
   const eventos = calEventsInView[calSelectedDateKey] || [];
-  html += `<h3>${calSelectedDateKey === hojeISO() ? 'Hoje · ' : ''}${fmtBRData(calSelectedDateKey)}</h3>`;
-  if (!eventos.length) {
+  html += `<div class="cal-agenda-header">
+    <h3 style="margin:0;">${calSelectedDateKey === hojeISO() ? 'Hoje · ' : ''}${fmtBRData(calSelectedDateKey)}</h3>
+    <button type="button" class="speed-btn" onclick="calAbrirNovo()">＋ Nova atividade</button>
+  </div>`;
+
+  if (calFormAberto === 'novo') html += calFormHtml(null, '', '');
+
+  if (!eventos.length && calFormAberto !== 'novo') {
     html += '<div class="crud-vazio" style="padding:20px 12px;">Nenhuma atividade neste dia.</div>';
-  } else {
-    eventos.forEach(ev => {
-      const match = idx[ev.id];
-      html += `<div class="revisao-card">
-        <div class="revisao-card-titulo">${escRv(ev.summary)}${match && match.item.cadeira_nome ? ' <span class="revisao-chip">' + escRv(match.item.cadeira_nome) + '</span>' : ''}</div>`;
-      if (match && match.item.notas) {
-        html += `<div class="revisao-card-notas">${escRv(match.item.notas)}</div>`;
-      } else if (!match) {
-        html += '<div class="revisao-card-sub">Evento fora da Revisão Espaçada (criado direto no Google Calendar).</div>';
-      }
-      html += '</div>';
-    });
   }
+  eventos.forEach(ev => {
+    const match = idx[ev.id];
+    const resumo = (match && match.item.notas) ? match.item.notas : (ev.description || '');
+    if (calFormAberto === ev.id) {
+      html += calFormHtml(ev.id, ev.summary, resumo);
+      return;
+    }
+    html += `<div class="revisao-card">
+      <div class="revisao-card-titulo">${escRv(ev.summary)}${match && match.item.cadeira_nome ? ' <span class="revisao-chip">' + escRv(match.item.cadeira_nome) + '</span>' : ''}</div>
+      ${resumo ? '<div class="revisao-card-notas">' + escRv(resumo) + '</div>' : ''}
+      <div class="revisao-card-btns">
+        <button class="speed-btn" onclick="calAbrirEdicao('${ev.id}')">✏️ Editar</button>
+        <button class="speed-btn" onclick="calPedirExclusao('${ev.id}')" style="color:var(--red);">🗑 Excluir</button>
+      </div>
+    </div>`;
+  });
   html += '</div>';
   return html;
+}
+
+function calAbrirNovo() { calFormAberto = 'novo'; renderRevisaoTab(); }
+function calAbrirEdicao(eventId) { calFormAberto = eventId; renderRevisaoTab(); }
+function calFecharForm() { calFormAberto = null; renderRevisaoTab(); }
+
+async function calCriarAtividade() {
+  const titulo = (document.getElementById('cal-form-titulo').value || '').trim();
+  const notas = (document.getElementById('cal-form-notas').value || '').trim();
+  if (!titulo) { mostrarToast('⚠️ Dê um título pra atividade.'); return; }
+  try {
+    await GoogleCalendar.createEvent(calSelectedDateKey, { summary: titulo, description: notas });
+    GoogleCalendar.clearCache();
+    calFormAberto = null;
+    renderRevisaoTab();
+    mostrarToast('✅ Atividade criada!');
+  } catch (e) {
+    console.warn('cal criar atividade:', e);
+    mostrarToast('❌ Não foi possível criar: ' + e.message);
+  }
+}
+
+async function calSalvarEdicao(eventId) {
+  const titulo = (document.getElementById('cal-form-titulo').value || '').trim();
+  const notas = (document.getElementById('cal-form-notas').value || '').trim();
+  if (!titulo) { mostrarToast('⚠️ Dê um título pra atividade.'); return; }
+  try {
+    await GoogleCalendar.updateEvent(eventId, calSelectedDateKey, { summary: titulo, description: notas });
+    // Vinculado a um assunto da Revisão Espaçada? O resumo editado aqui é
+    // o mesmo campo "notas" do assunto (compartilhado pelas 4 datas).
+    const match = gcalEventIndex()[eventId];
+    if (match && sb) {
+      match.item.notas = notas;
+      await sb.from('mp_revisoes').update({ notas }).eq('id', match.item.id);
+    }
+    GoogleCalendar.clearCache();
+    calFormAberto = null;
+    renderRevisaoTab();
+    mostrarToast('✅ Atividade atualizada!');
+  } catch (e) {
+    console.warn('cal editar atividade:', e);
+    mostrarToast('❌ Não foi possível editar: ' + e.message);
+  }
+}
+
+function calPedirExclusao(eventId) {
+  if (!confirm('Excluir esta atividade da sua agenda?')) return;
+  calExcluirAtividade(eventId);
+}
+async function calExcluirAtividade(eventId) {
+  try {
+    await GoogleCalendar.deleteEvent(eventId);
+    // Se tiver vinculado a um assunto, limpa só o link daquela data — o
+    // assunto e as outras revisões continuam intactos.
+    const match = gcalEventIndex()[eventId];
+    if (match && sb) {
+      const novoIds = { ...match.item.calendar_event_ids };
+      delete novoIds[match.offset];
+      match.item.calendar_event_ids = novoIds;
+      await sb.from('mp_revisoes').update({ calendar_event_ids: novoIds }).eq('id', match.item.id);
+    }
+    GoogleCalendar.clearCache();
+    renderRevisaoTab();
+    mostrarToast('🗑 Atividade excluída.');
+  } catch (e) {
+    console.warn('cal excluir atividade:', e);
+    mostrarToast('❌ Não foi possível excluir: ' + e.message);
+  }
 }
 
 async function renderRevisaoCalendario() {

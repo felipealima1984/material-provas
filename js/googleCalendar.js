@@ -131,6 +131,22 @@
     return res.json();
   }
 
+  /** Edita um evento existente (título e/ou descrição e/ou data). */
+  async function updateEvent(eventId, dateKey, opts, calendarId) {
+    calendarId = calendarId || 'primary';
+    const token = await getToken({ interactive: false });
+    const res = await fetch(`${eventsUrl(calendarId)}/${encodeURIComponent(eventId)}`, {
+      method: 'PATCH',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(buildEventBody(dateKey, opts)),
+    });
+    if (!res.ok) {
+      const detail = await res.text().catch(() => '');
+      throw new Error(`Google Calendar respondeu ${res.status} ao editar evento. ${detail}`);
+    }
+    return res.json();
+  }
+
   /** Exclui um evento. 410 (já não existia) é tratado como sucesso. */
   async function deleteEvent(eventId, calendarId) {
     calendarId = calendarId || 'primary';
@@ -183,7 +199,7 @@
       (data.items || []).filter(ev => ev.start && ev.id).forEach(ev => {
         const allDay = !!ev.start.date;
         const key = ev.start.date || String(ev.start.dateTime || '').slice(0, 10);
-        (byDate[key] = byDate[key] || []).push({ id: ev.id, summary: ev.summary || '(Sem título)', allDay });
+        (byDate[key] = byDate[key] || []).push({ id: ev.id, summary: ev.summary || '(Sem título)', description: ev.description || '', allDay });
       });
       Object.values(byDate).forEach(list => list.sort((a, b) => (a.summary || '').localeCompare(b.summary || '')));
 
@@ -195,5 +211,5 @@
     }
   }
 
-  return { configure, isAvailable, isConnected, connect, disconnect, createEvent, deleteEvent, getMonthEvents, clearCache, nextDayKey };
+  return { configure, isAvailable, isConnected, connect, disconnect, createEvent, updateEvent, deleteEvent, getMonthEvents, clearCache, nextDayKey };
 });
