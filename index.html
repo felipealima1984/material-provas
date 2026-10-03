@@ -409,6 +409,23 @@
     background:var(--surface); border:1px solid var(--border); color:var(--text);
     border-radius:6px; padding:7px 10px; font-size:0.85rem; width:100%; box-sizing:border-box; font-family:inherit; }
 
+  /* ══ CALENDÁRIO VISUAL (aba Calendário da Revisão) ══ */
+  .cal-header { display:flex; align-items:center; justify-content:center; gap:14px; margin-bottom:10px; font-size:0.88rem; color:var(--text); }
+  .cal-grid { display:grid; grid-template-columns:repeat(7,1fr); gap:4px; margin-bottom:16px; }
+  .cal-weekday { text-align:center; font-size:0.66rem; color:var(--muted); font-weight:700; padding-bottom:4px; }
+  .cal-day {
+    aspect-ratio:1; border:none; border-radius:8px; background:var(--surface2); color:var(--text);
+    font-size:0.82rem; cursor:pointer; display:flex; align-items:center; justify-content:center;
+    position:relative; padding:0; }
+  .cal-day:hover { background:var(--border); }
+  .cal-day.is-muted { background:none; color:var(--border); cursor:default; }
+  .cal-day.is-today { outline:2px solid var(--accent); outline-offset:-2px; font-weight:800; }
+  .cal-day.is-selected { background:var(--accent); color:#fff; }
+  .cal-day.has-evento::after {
+    content:''; position:absolute; bottom:4px; width:5px; height:5px; border-radius:50%; background:var(--yellow); }
+  .cal-day.is-selected.has-evento::after { background:#fff; }
+  .cal-agenda h3 { margin-top:0; }
+
   /* ══ TIMER POMODORO/CRONÔMETRO ══ */
   .timer-btn {
     position: fixed; bottom: 86px; right: 24px; z-index: 150;
@@ -4875,7 +4892,7 @@ const BUILD_VERSAO = '2026-10-02-diag1';
 // única pro rodapé e pro aviso de novidades — atualizar aqui a cada
 // publish em vez de editar o HTML do rodapé direto.
 // ══════════════════════════════════════════
-const APP_VERSION = '1.77';
+const APP_VERSION = '1.78';
 const VERSION_NOTES = [
   { version: '1.70', notes: 'leitor de voz reescrito: destaque de palavra em tempo real, barra de progresso arrastável (seek de verdade) e retomada exata da posição após um refresh (nunca autoplay).' },
   { version: '1.71', notes: 'novo painel de Revisão Espaçada (1-3-7-21 dias): cadastre um assunto estudado e o sistema monta o calendário de revisões sozinho, com streak de dias em dia.' },
@@ -4885,6 +4902,7 @@ const VERSION_NOTES = [
   { version: '1.75', notes: 'faixa "Resumo do dia" com revisões pendentes, abaixo do cabeçalho, com aviso do navegador quando há pendência.' },
   { version: '1.76', notes: 'Google Calendar (opcional): conecte sua conta no painel de Revisão Espaçada e cada assunto cadastrado cria lembretes automáticos nas 4 datas de revisão.' },
   { version: '1.77', notes: 'nova aba "Calendário" na Revisão Espaçada: veja os eventos do Google Calendar direto no app, já com o resumo (notas) do assunto — dá pra estudar de qualquer lugar.' },
+  { version: '1.78', notes: 'a aba Calendário virou um calendário de verdade: grade do mês, hoje destacado, clique num dia pra ver as atividades daquele dia.' },
 ];
 function notesSince(lastSeen) { return VersionNotes.notesSince(VERSION_NOTES, lastSeen); }
 function initWhatsNew() {
@@ -6777,26 +6795,40 @@ function gcalEventIndex() {
   return idx;
 }
 
-async function renderRevisaoCalendario() {
-  if (!GoogleCalendar.isConnected()) {
-    return '<div class="crud-vazio">Conecte o Google Calendar (botão no topo) pra ver seus eventos e resumos aqui — dá pra estudar de qualquer lugar sem precisar abrir mais nada.</div>';
+// Calendário visual (grade do mês) — estado fica fora da função pra
+// sobreviver a re-renders (trocar de mês, selecionar outro dia).
+let calViewYear = null, calViewMonth = null; // mês exibido (0-11)
+let calSelectedDateKey = null;
+let calEventsInView = {}; // { [dateKey]: evento[] } do mês atualmente exibido
+
+function calBuildMonthCells(year, month) {
+  const first = new Date(year, month, 1);
+  const startWeekday = first.getDay();
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  const daysInPrevMonth = new Date(year, month, 0).getDate();
+  const cells = [];
+  for (let i = 0; i < startWeekday; i++) cells.push({ day: daysInPrevMonth - startWeekday + 1 + i, muted: true });
+  for (let d = 1; d <= daysInMonth; d++) {
+    const key = `${year}-${String(month + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+    cells.push({ day: d, muted: false, today: key === hojeISO(), key });
   }
-  const hoje = new Date();
-  const [mesAtual, mesQueVem] = await Promise.all([
-    GoogleCalendar.getMonthEvents(hoje.getFullYear(), hoje.getMonth()),
-    GoogleCalendar.getMonthEvents(hoje.getFullYear(), hoje.getMonth() + 1),
-  ]);
-  const eventosPorDia = { ...mesAtual, ...mesQueVem };
+  while (cells.length % 7 !== 0) cells.push({ day: cells.length, muted: true });
+  return cells;
+}
+
+function calRenderAgenda() {
+  let html = '<div class="cal-agenda">';
+  if (!calSelectedDateKey) {
+    html += '<div class="crud-vazio">Clique num dia pra ver as atividades.</div></div>';
+    return html;
+  }
   const idx = gcalEventIndex();
-  const todayKey = hojeISO();
-  const datas = Object.keys(eventosPorDia).filter(k => k >= todayKey).sort();
-
-  if (!datas.length) return '<div class="crud-vazio">Nenhum evento a partir de hoje nos próximos 2 meses.</div>';
-
-  let html = '';
-  datas.forEach(dataKey => {
-    html += `<h3>${dataKey === todayKey ? 'Hoje · ' : ''}${fmtBRData(dataKey)}</h3>`;
-    eventosPorDia[dataKey].forEach(ev => {
+  const eventos = calEventsInView[calSelectedDateKey] || [];
+  html += `<h3>${calSelectedDateKey === hojeISO() ? 'Hoje · ' : ''}${fmtBRData(calSelectedDateKey)}</h3>`;
+  if (!eventos.length) {
+    html += '<div class="crud-vazio" style="padding:20px 12px;">Nenhuma atividade neste dia.</div>';
+  } else {
+    eventos.forEach(ev => {
       const match = idx[ev.id];
       html += `<div class="revisao-card">
         <div class="revisao-card-titulo">${escRv(ev.summary)}${match && match.item.cadeira_nome ? ' <span class="revisao-chip">' + escRv(match.item.cadeira_nome) + '</span>' : ''}</div>`;
@@ -6807,8 +6839,56 @@ async function renderRevisaoCalendario() {
       }
       html += '</div>';
     });
-  });
+  }
+  html += '</div>';
   return html;
+}
+
+async function renderRevisaoCalendario() {
+  if (!GoogleCalendar.isConnected()) {
+    return '<div class="crud-vazio">Conecte o Google Calendar (botão no topo) pra ver seu calendário e as atividades do dia aqui — dá pra estudar de qualquer lugar sem precisar abrir mais nada.</div>';
+  }
+  if (calViewYear === null) {
+    const hoje = new Date();
+    calViewYear = hoje.getFullYear();
+    calViewMonth = hoje.getMonth();
+    calSelectedDateKey = hojeISO();
+  }
+  calEventsInView = await GoogleCalendar.getMonthEvents(calViewYear, calViewMonth);
+
+  const cells = calBuildMonthCells(calViewYear, calViewMonth);
+  const WEEKDAY_LABELS = ['D', 'S', 'T', 'Q', 'Q', 'S', 'S'];
+  const mesLabel = new Date(calViewYear, calViewMonth, 1).toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' });
+
+  let html = `<div class="cal-header">
+    <button type="button" class="speed-btn" onclick="calMudarMes(-1)" title="Mês anterior">◀</button>
+    <strong style="text-transform:capitalize;">${mesLabel}</strong>
+    <button type="button" class="speed-btn" onclick="calMudarMes(1)" title="Próximo mês">▶</button>
+  </div>
+  <div class="cal-grid">`;
+  WEEKDAY_LABELS.forEach(w => { html += `<div class="cal-weekday">${w}</div>`; });
+  cells.forEach(c => {
+    if (c.muted) { html += `<span class="cal-day is-muted">${c.day}</span>`; return; }
+    const classes = ['cal-day'];
+    if (c.today) classes.push('is-today');
+    if (c.key === calSelectedDateKey) classes.push('is-selected');
+    if (calEventsInView[c.key] && calEventsInView[c.key].length) classes.push('has-evento');
+    html += `<button type="button" class="${classes.join(' ')}" onclick="calSelecionarDia('${c.key}')">${c.day}</button>`;
+  });
+  html += '</div>';
+  html += calRenderAgenda();
+  return html;
+}
+
+function calMudarMes(delta) {
+  calViewMonth += delta;
+  if (calViewMonth < 0) { calViewMonth = 11; calViewYear--; }
+  else if (calViewMonth > 11) { calViewMonth = 0; calViewYear++; }
+  renderRevisaoTab();
+}
+function calSelecionarDia(key) {
+  calSelectedDateKey = key;
+  renderRevisaoTab();
 }
 
 let revisaoTabAtual = 'hoje';
