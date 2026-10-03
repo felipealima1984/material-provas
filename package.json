@@ -1,0 +1,10 @@
+{
+  "name": "material-provas",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Testes da lógica pura do Material de Provas (revisão espaçada, changelog). O app em si continua sem build/dependências — isso é só ferramenta de dev.",
+  "type": "commonjs",
+  "scripts": {
+    "test": "node --test tests/*.test.js"
+  }
+}

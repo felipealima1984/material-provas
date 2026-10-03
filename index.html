@@ -4843,6 +4843,8 @@
 
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.117.2"></script>
+<script src="js/revisaoEngine.js"></script>
+<script src="js/versionNotes.js"></script>
 <script>
 
 // ══════════════════════════════════════════
@@ -4864,19 +4866,7 @@ const VERSION_NOTES = [
   { version: '1.72', notes: 'novo Timer (Pomodoro e cronômetro), com botão flutuante — sobrevive a fechar a aba.' },
   { version: '1.73', notes: 'esse aviso de novidades que você está lendo agora.' },
 ];
-function compareVersions(a, b) {
-  const pa = String(a).split('.').map(Number), pb = String(b).split('.').map(Number);
-  const len = Math.max(pa.length, pb.length);
-  for (let i = 0; i < len; i++) {
-    const diff = (pa[i] || 0) - (pb[i] || 0);
-    if (diff !== 0) return diff > 0 ? 1 : -1;
-  }
-  return 0;
-}
-function notesSince(lastSeen) {
-  if (!lastSeen) return [];
-  return VERSION_NOTES.filter(n => compareVersions(n.version, lastSeen) > 0).sort((a, b) => compareVersions(a.version, b.version));
-}
+function notesSince(lastSeen) { return VersionNotes.notesSince(VERSION_NOTES, lastSeen); }
 function initWhatsNew() {
   const agora = new Date().toLocaleString('pt-BR', { day:'2-digit', month:'2-digit', year:'numeric', hour:'2-digit', minute:'2-digit', second:'2-digit' });
   const rodapeTxt = `v${APP_VERSION} - ${agora}`;
@@ -6541,39 +6531,12 @@ function escRv(str) {
   return String(str ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
 
-const REVIEW_OFFSETS = [1, 3, 7, 21];
-function reviewLabel(offset) { return { 1:'1ª revisão', 3:'2ª revisão', 7:'3ª revisão', 21:'4ª revisão' }[offset] || offset + 'd'; }
-function hojeISO() { return new Date().toISOString().slice(0, 10); }
-function addDiasISO(iso, dias) {
-  const d = new Date(iso + 'T00:00:00');
-  d.setDate(d.getDate() + dias);
-  return d.toISOString().slice(0, 10);
-}
-function fmtBRData(iso) {
-  if (!iso) return '—';
-  const [y, m, d] = iso.split('-');
-  return `${d}/${m}/${y}`;
-}
-function makeReviews(dataEstudo) {
-  return REVIEW_OFFSETS.map(offset => ({ offset, date: addDiasISO(dataEstudo, offset), status: 'pending', method: null, secondPassAck: false }));
-}
+// Lógica pura (datas, ciclo de revisão, streak) vive em js/revisaoEngine.js
+// — carregado via <script src> antes deste bloco, compartilhado com os
+// testes (tests/revisaoEngine.test.js). Aqui ficam só os adaptadores que
+// precisam de CRUD/DOM/Supabase, que o módulo puro não conhece.
+const { reviewLabel, hojeISO, addDiasISO, fmtBRData, makeReviews, parseDataProva, getSecondPassList, computeStreak } = RevisaoEngine;
 
-// "28/set" (como mp_cadeiras.data_prova guarda, sem ano) → ISO, usando o
-// ano corrente como base — suficiente pro caso de uso (provas do semestre
-// em curso). Sem formato reconhecido, retorna null (revisão nunca é
-// marcada como cancelada por prova, mas segue funcionando normalmente).
-const MESES_PT_RV = { jan:0, fev:1, mar:2, abr:3, mai:4, jun:5, jul:6, ago:7, set:8, out:9, nov:10, dez:11 };
-function parseDataProva(str) {
-  if (!str) return null;
-  const m = String(str).trim().match(/^(\d{1,2})\/([a-zçà-ú]{3,})\.?$/i);
-  if (!m) return null;
-  const dia = parseInt(m[1], 10);
-  const mesKey = m[2].toLowerCase().slice(0, 3).normalize('NFD').replace(/[̀-ͯ]/g, '');
-  const mes = MESES_PT_RV[mesKey];
-  if (mes === undefined || !dia) return null;
-  const ano = new Date().getFullYear();
-  return new Date(Date.UTC(ano, mes, dia)).toISOString().slice(0, 10);
-}
 function examDateFor(item) {
   if (!item.cadeira_nome) return null;
   for (const per of CRUD.periodos) {
@@ -6582,60 +6545,14 @@ function examDateFor(item) {
   }
   return null;
 }
-function isSkippedRv(review, examDate) {
-  if (!examDate) return false;
-  return review.status !== 'done' && review.date > examDate;
-}
-function isDoneOrSkippedRv(review, examDate) {
-  return review.status === 'done' || isSkippedRv(review, examDate);
-}
-function reviewStateRv(review, examDate, today) {
-  today = today || hojeISO();
-  if (review.status === 'done') return review.method === 'struggle' ? 'done-struggle' : 'done-ok';
-  if (isSkippedRv(review, examDate)) return 'skipped';
-  if (review.date < today) return 'atrasada';
-  if (review.date === today) return 'hoje';
-  return 'futura';
-}
-function isActionableRv(review, examDate, today) {
-  const st = reviewStateRv(review, examDate, today);
-  return st === 'atrasada' || st === 'hoje';
-}
 function recomputeConsolidated(item) {
-  const examDate = examDateFor(item);
-  item.consolidated = item.reviews.every(r => isDoneOrSkippedRv(r, examDate));
+  RevisaoEngine.recomputeConsolidated(item, examDateFor(item));
 }
 function getActionableList(items, today) {
-  today = today || hojeISO();
-  const list = [];
-  items.forEach(item => {
-    if (item.consolidated) return;
-    const examDate = examDateFor(item);
-    item.reviews.forEach(r => { if (isActionableRv(r, examDate, today)) list.push({ item, review: r, atrasada: r.date < today }); });
-  });
-  return list;
-}
-function getSecondPassList(items, today) {
-  today = today || hojeISO();
-  const list = [];
-  items.forEach(item => {
-    item.reviews.forEach(r => { if (r.status === 'done' && r.method === 'struggle' && !r.secondPassAck && r.date <= today) list.push({ item, review: r }); });
-  });
-  return list;
-}
-function computeStreak(closedDays, today) {
-  today = today || hojeISO();
-  let count = 0, cursor = today;
-  if (!closedDays.includes(cursor)) cursor = addDiasISO(cursor, -1);
-  while (closedDays.includes(cursor)) { count++; cursor = addDiasISO(cursor, -1); }
-  return count;
+  return RevisaoEngine.getActionableList(items, examDateFor, today);
 }
 function updateClosedDayState(items, closedDays, today) {
-  today = today || hojeISO();
-  const pending = getActionableList(items, today);
-  const idx = closedDays.indexOf(today);
-  if (pending.length === 0) { if (idx === -1) closedDays.push(today); }
-  else if (idx !== -1) closedDays.splice(idx, 1);
+  RevisaoEngine.updateClosedDayState(items, examDateFor, closedDays, today);
 }
 
 const REVISAO = { items: [], closedDays: [], carregado: false };
