@@ -439,6 +439,14 @@
   .timer-config input { width:48px; text-align:center; background:var(--surface2); border:1px solid var(--border);
     color:var(--text); border-radius:6px; padding:3px 4px; }
 
+  /* ══ RESUMO DO DIA ══ */
+  .daily-digest { display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-top:10px;
+    background:rgba(251,191,36,0.1); border:1px solid var(--yellow); border-radius:10px; padding:8px 12px; }
+  .daily-digest-item { background:none; border:none; color:var(--yellow); font-weight:700; font-size:0.82rem; cursor:pointer; padding:0; }
+  .daily-digest-item:hover { text-decoration:underline; }
+  .daily-digest-dismiss { margin-left:auto; background:none; border:1px solid var(--border); color:var(--muted);
+    border-radius:16px; padding:1px 9px; font-size:0.72rem; cursor:pointer; }
+
 
   /* ══ LOGIN ══ */
   #mp-login {
@@ -546,6 +554,7 @@
 <p class="sub">Selecione o período · cadeira · unidade para estudar</p>
 <p style="font-size:0.72rem;color:var(--muted);margin-top:4px;">🕐 Última atualização: 02/10/2026</p>
 <button class="revisao-abrir-btn" onclick="abrirRevisao()">📚 Revisão Espaçada</button>
+<div id="daily-digest" class="daily-digest" hidden></div>
 
 <!-- ══ MODAL REVISÃO ESPAÇADA ══ -->
 <div class="revisao-modal-bg" id="revisao-modal">
@@ -6606,6 +6615,7 @@ function revisaoResponder(itemId, offset, method) {
   updateClosedDayState(REVISAO.items, REVISAO.closedDays);
   revisaoPersistirItem(item);
   renderRevisaoTab();
+  renderDailyDigest();
 }
 
 function revisaoAckSecondPass(itemId, offset) {
@@ -6628,6 +6638,7 @@ async function revisaoSubmeterNovo() {
   document.getElementById('rv-titulo').value = '';
   document.getElementById('rv-notas').value = '';
   renderRevisaoTab();
+  renderDailyDigest();
   mostrarToast('✅ Assunto cadastrado!');
 }
 
@@ -6735,6 +6746,58 @@ async function abrirRevisao() {
 }
 function fecharRevisao() {
   document.getElementById('revisao-modal').classList.remove('aberto');
+}
+
+// ══════════════════════════════════════════════
+// RESUMO DO DIA — faixa dispensável com revisões pendentes, + notificação
+// simples do navegador (só enquanto o app está aberto numa aba; sem
+// backend/Web Push, não funciona com o navegador fechado — ver
+// dailyDigestWidget.js do Mirante, aqui reduzido: sem tarefas nem Google
+// Calendar, que este app não tem).
+// ══════════════════════════════════════════════
+const DAILY_DIGEST_DISMISS_KEY = 'mp_dailyDigestDismissedDate';
+let _dailyDigestUltimaNotificacao = null; // 'YYYY-MM-DD:contagem' já notificado nesta sessão — evita repetir
+
+function isDailyDigestDismissedToday(today) {
+  try { return localStorage.getItem(DAILY_DIGEST_DISMISS_KEY) === today; } catch (e) { return false; }
+}
+function dismissDailyDigestToday(today) {
+  try { localStorage.setItem(DAILY_DIGEST_DISMISS_KEY, today); } catch (e) {}
+}
+function dismissDailyDigestClick() {
+  dismissDailyDigestToday(hojeISO());
+  renderDailyDigest();
+}
+
+function renderDailyDigest() {
+  const el = document.getElementById('daily-digest');
+  if (!el || !REVISAO.carregado) return;
+  const today = hojeISO();
+  const count = getActionableList(REVISAO.items, today).length;
+  if (!count || isDailyDigestDismissedToday(today)) {
+    el.hidden = true;
+    el.innerHTML = '';
+    return;
+  }
+  el.hidden = false;
+  el.innerHTML = `<button type="button" class="daily-digest-item" onclick="abrirRevisao()">📚 ${count} ${count === 1 ? 'revisão pendente' : 'revisões pendentes'}</button>
+    <button type="button" class="daily-digest-dismiss" onclick="dismissDailyDigestClick()" title="Dispensar por hoje">✕ por hoje</button>`;
+
+  const assinatura = today + ':' + count;
+  if (_dailyDigestUltimaNotificacao !== assinatura && typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+    _dailyDigestUltimaNotificacao = assinatura;
+    try {
+      new Notification('📚 Material de Provas', { body: `${count} revisão(ões) pendente(s) hoje.` });
+    } catch (e) {}
+  }
+}
+
+async function iniciarResumoDoDia() {
+  if (!_mpUser) return;
+  await revisaoCarregar();
+  renderDailyDigest();
+  // pega a virada do dia (aba aberta atravessando a meia-noite) e mudanças feitas no modal
+  setInterval(renderDailyDigest, 5 * 60 * 1000);
 }
 
 // ══════════════════════════════════════════════
@@ -7016,6 +7079,7 @@ function mpAposLogin() {
     diagRegistrar('mpAposLogin', 'ERRO síncrono (provável HTML desatualizado em cache): ' + e.message);
   }
   crudCarregarDoSupabase().then(crudRender).catch(function(e){ diagRegistrar('mpAposLogin', 'crudCarregarDoSupabase/crudRender rejeitou: ' + e.message); });
+  iniciarResumoDoDia().catch(function(e){ diagRegistrar('mpAposLogin', 'iniciarResumoDoDia rejeitou: ' + e.message); });
   if (_mpUser.role === 'viewer') {
     setTimeout(() => {
       document.querySelectorAll('.crud-add, .crud-del').forEach(el => el.style.display = 'none');
