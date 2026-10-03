@@ -561,8 +561,12 @@
   <div class="revisao-modal">
     <div class="revisao-modal-header">
       <h3>📚 Revisão Espaçada</h3>
-      <button class="revisao-fechar" onclick="fecharRevisao()">✕ Fechar</button>
+      <div style="display:flex;gap:6px;align-items:center;">
+        <button class="revisao-fechar" id="gcal-btn" onclick="gcalToggleConexao()">🔗 Google Calendar</button>
+        <button class="revisao-fechar" onclick="fecharRevisao()">✕ Fechar</button>
+      </div>
     </div>
+    <div id="gcal-status" style="font-size:0.72rem;color:var(--muted);margin-top:-6px;"></div>
     <div class="revisao-tabs">
       <button class="revisao-tab-btn" data-tab="hoje" onclick="revisaoMudarTab('hoje')">Hoje</button>
       <button class="revisao-tab-btn" data-tab="visao" onclick="revisaoMudarTab('visao')">Visão Geral</button>
@@ -4854,6 +4858,8 @@
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.117.2"></script>
 <script src="js/revisaoEngine.js"></script>
 <script src="js/versionNotes.js"></script>
+<script src="js/googleCalendar.js"></script>
+<script src="https://accounts.google.com/gsi/client" async defer></script>
 <script>
 
 // ══════════════════════════════════════════
@@ -4868,7 +4874,7 @@ const BUILD_VERSAO = '2026-10-02-diag1';
 // única pro rodapé e pro aviso de novidades — atualizar aqui a cada
 // publish em vez de editar o HTML do rodapé direto.
 // ══════════════════════════════════════════
-const APP_VERSION = '1.75';
+const APP_VERSION = '1.76';
 const VERSION_NOTES = [
   { version: '1.70', notes: 'leitor de voz reescrito: destaque de palavra em tempo real, barra de progresso arrastável (seek de verdade) e retomada exata da posição após um refresh (nunca autoplay).' },
   { version: '1.71', notes: 'novo painel de Revisão Espaçada (1-3-7-21 dias): cadastre um assunto estudado e o sistema monta o calendário de revisões sozinho, com streak de dias em dia.' },
@@ -4876,6 +4882,7 @@ const VERSION_NOTES = [
   { version: '1.73', notes: 'aviso de novidades dispensável — esse mesmo aviso que você está lendo agora.' },
   { version: '1.74', notes: 'bastidores: testes automatizados pra lógica de revisão e changelog, sem efeito visível no app.' },
   { version: '1.75', notes: 'faixa "Resumo do dia" com revisões pendentes, abaixo do cabeçalho, com aviso do navegador quando há pendência.' },
+  { version: '1.76', notes: 'Google Calendar (opcional): conecte sua conta no painel de Revisão Espaçada e cada assunto cadastrado cria lembretes automáticos nas 4 datas de revisão.' },
 ];
 function notesSince(lastSeen) { return VersionNotes.notesSince(VERSION_NOTES, lastSeen); }
 function initWhatsNew() {
@@ -6583,18 +6590,44 @@ async function revisaoCarregar() {
   } catch (e) { console.warn('revisaoCarregar:', e); }
 }
 
+function reviewTodoText(titulo, cadeiraNome, offset) {
+  const label = cadeiraNome ? `${cadeiraNome} — ${titulo}` : titulo;
+  return `📚 Revisar (${reviewLabel(offset)}): ${label}`;
+}
+
 async function revisaoCriarAssunto(titulo, cadeiraNome, notas, dataEstudo) {
   if (!sb || !_mpUser) return;
   const reviews = makeReviews(dataEstudo);
-  const { error } = await sb.from('mp_revisoes').insert({
+  const { data, error } = await sb.from('mp_revisoes').insert({
     usuario_login: _mpUser.login, cadeira_nome: cadeiraNome || null, titulo, notas: notas || '', data_estudo: dataEstudo, reviews
-  });
+  }).select().single();
   if (error) { mostrarToast('❌ ' + error.message); return; }
+
+  if (GoogleCalendar.isConnected()) {
+    try {
+      const eventIds = {};
+      for (const r of reviews) {
+        const ev = await GoogleCalendar.createEvent(r.date, { summary: reviewTodoText(titulo, cadeiraNome, r.offset) });
+        eventIds[r.offset] = ev.id;
+      }
+      await sb.from('mp_revisoes').update({ calendar_event_ids: eventIds }).eq('id', data.id);
+      mostrarToast('✅ Assunto cadastrado e eventos criados no Google Calendar!');
+    } catch (e) {
+      console.warn('gcal criar eventos:', e);
+      mostrarToast('⚠️ Assunto cadastrado, mas falhou ao criar eventos no Google Calendar.');
+    }
+  }
   await revisaoCarregar();
 }
 
 async function revisaoRemoverAssunto(itemId) {
   if (!sb) return;
+  const item = REVISAO.items.find(i => i.id === itemId);
+  if (item && GoogleCalendar.isConnected() && item.calendar_event_ids) {
+    for (const eventId of Object.values(item.calendar_event_ids)) {
+      try { await GoogleCalendar.deleteEvent(eventId); } catch (e) { console.warn('gcal excluir evento:', e); }
+    }
+  }
   await sb.from('mp_revisoes').delete().eq('id', itemId);
   await revisaoCarregar();
   renderRevisaoTab();
@@ -6738,11 +6771,58 @@ function renderRevisaoTab() {
 }
 function revisaoMudarTab(tab) { revisaoTabAtual = tab; renderRevisaoTab(); }
 
+// ══════════════════════════════════════════════
+// GOOGLE CALENDAR — integração opcional, por aparelho (cada um conecta a
+// própria conta). Ver js/googleCalendar.js. O Client ID abaixo é o mesmo
+// já usado no Mirante (tipo "App Chrome", via chrome.identity) —
+// reaproveitado a pedido, mas o fluxo aqui é Google Identity Services
+// (site comum), que exige um Client ID tipo "Aplicativo da Web". Se o
+// botão "Conectar" falhar com erro de origem/tipo de app, crie um
+// Client ID novo desse tipo no mesmo projeto do Google Cloud Console
+// (Origem JavaScript autorizada: https://felipealima1984.github.io) e
+// troque o valor abaixo.
+// ══════════════════════════════════════════════
+const GOOGLE_CLIENT_ID = '733687334777-6stpga29trvca5jish84vkd70bkddvlv.apps.googleusercontent.com';
+GoogleCalendar.configure(GOOGLE_CLIENT_ID);
+
+function gcalAtualizarUI() {
+  const btn = document.getElementById('gcal-btn');
+  const status = document.getElementById('gcal-status');
+  if (!btn || !status) return;
+  const conectado = GoogleCalendar.isConnected();
+  btn.textContent = conectado ? '🔗 Desconectar Google Calendar' : '🔗 Conectar Google Calendar';
+  status.textContent = conectado
+    ? 'Conectado — novos assuntos criam lembretes automáticos no seu Google Calendar.'
+    : '';
+}
+
+async function gcalToggleConexao() {
+  if (GoogleCalendar.isConnected()) {
+    GoogleCalendar.disconnect();
+    gcalAtualizarUI();
+    mostrarToast('Google Calendar desconectado.');
+    return;
+  }
+  if (!GoogleCalendar.isAvailable()) {
+    mostrarToast('⚠️ Google Identity Services ainda não carregou — tente de novo em alguns segundos.');
+    return;
+  }
+  try {
+    await GoogleCalendar.connect();
+    gcalAtualizarUI();
+    mostrarToast('✅ Google Calendar conectado!');
+  } catch (e) {
+    console.warn('gcal connect:', e);
+    mostrarToast('❌ Não foi possível conectar: ' + e.message);
+  }
+}
+
 async function abrirRevisao() {
   if (!_mpUser) return;
   document.getElementById('revisao-modal').classList.add('aberto');
   revisaoTabAtual = 'hoje';
   document.getElementById('revisao-content').innerHTML = '<div class="crud-vazio">Carregando…</div>';
+  gcalAtualizarUI();
   await revisaoCarregar();
   renderRevisaoTab();
 }
@@ -6754,8 +6834,9 @@ function fecharRevisao() {
 // RESUMO DO DIA — faixa dispensável com revisões pendentes, + notificação
 // simples do navegador (só enquanto o app está aberto numa aba; sem
 // backend/Web Push, não funciona com o navegador fechado — ver
-// dailyDigestWidget.js do Mirante, aqui reduzido: sem tarefas nem Google
-// Calendar, que este app não tem).
+// dailyDigestWidget.js do Mirante, aqui reduzido: sem tarefas, que este
+// app não tem. Eventos do Google Calendar já aparecem no próprio
+// Calendar/celular do usuário, não precisam duplicar aqui).
 // ══════════════════════════════════════════════
 const DAILY_DIGEST_DISMISS_KEY = 'mp_dailyDigestDismissedDate';
 let _dailyDigestUltimaNotificacao = null; // 'YYYY-MM-DD:contagem' já notificado nesta sessão — evita repetir
