@@ -6773,16 +6773,11 @@ function revisaoMudarTab(tab) { revisaoTabAtual = tab; renderRevisaoTab(); }
 
 // ══════════════════════════════════════════════
 // GOOGLE CALENDAR — integração opcional, por aparelho (cada um conecta a
-// própria conta). Ver js/googleCalendar.js. O Client ID abaixo é o mesmo
-// já usado no Mirante (tipo "App Chrome", via chrome.identity) —
-// reaproveitado a pedido, mas o fluxo aqui é Google Identity Services
-// (site comum), que exige um Client ID tipo "Aplicativo da Web". Se o
-// botão "Conectar" falhar com erro de origem/tipo de app, crie um
-// Client ID novo desse tipo no mesmo projeto do Google Cloud Console
-// (Origem JavaScript autorizada: https://felipealima1984.github.io) e
-// troque o valor abaixo.
+// própria conta). Ver js/googleCalendar.js. Client ID tipo "Aplicativo
+// da Web" (Google Identity Services), com
+// https://felipealima1984.github.io em "Origens JavaScript autorizadas".
 // ══════════════════════════════════════════════
-const GOOGLE_CLIENT_ID = '733687334777-6stpga29trvca5jish84vkd70bkddvlv.apps.googleusercontent.com';
+const GOOGLE_CLIENT_ID = '733687334777-g3igve8p8l4a00745srf6t57d92p26sd.apps.googleusercontent.com';
 GoogleCalendar.configure(GOOGLE_CLIENT_ID);
 
 function gcalAtualizarUI() {
