@@ -91,6 +91,7 @@
     }
     accessToken = null;
     tokenExpiresAt = 0;
+    clearCache();
   }
 
   function eventsUrl(calendarId) {
@@ -144,5 +145,55 @@
     }
   }
 
-  return { configure, isAvailable, isConnected, connect, disconnect, createEvent, deleteEvent, nextDayKey };
+  // Cache em memória (dura enquanto a aba estiver aberta):
+  // "ano-mês::calendarId" -> { [dateKey]: evento[] }
+  const monthCache = new Map();
+  function clearCache() { monthCache.clear(); }
+
+  /**
+   * Retorna { [dateKey]: evento[] } do mês pedido (month é 0-11). Em caso
+   * de token expirado/sem conexão/qualquer falha, retorna {} em silêncio
+   * — a tela degrada mostrando "sem eventos" em vez de quebrar.
+   */
+  async function getMonthEvents(year, month, calendarId) {
+    calendarId = calendarId || 'primary';
+    if (!isConnected()) return {};
+    const cacheKey = `${year}-${month}::${calendarId}`;
+    if (monthCache.has(cacheKey)) return monthCache.get(cacheKey);
+
+    let token;
+    try { token = await getToken({ interactive: false }); }
+    catch (e) { console.warn('[gcal] sem token válido (reconecte):', e.message); return {}; }
+
+    try {
+      const start = new Date(year, month, 1);
+      const end = new Date(year, month + 1, 1);
+      const url = new URL(eventsUrl(calendarId));
+      url.searchParams.set('timeMin', start.toISOString());
+      url.searchParams.set('timeMax', end.toISOString());
+      url.searchParams.set('singleEvents', 'true');
+      url.searchParams.set('orderBy', 'startTime');
+      url.searchParams.set('maxResults', '250');
+
+      const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+      if (!res.ok) return {};
+      const data = await res.json();
+
+      const byDate = {};
+      (data.items || []).filter(ev => ev.start && ev.id).forEach(ev => {
+        const allDay = !!ev.start.date;
+        const key = ev.start.date || String(ev.start.dateTime || '').slice(0, 10);
+        (byDate[key] = byDate[key] || []).push({ id: ev.id, summary: ev.summary || '(Sem título)', allDay });
+      });
+      Object.values(byDate).forEach(list => list.sort((a, b) => (a.summary || '').localeCompare(b.summary || '')));
+
+      monthCache.set(cacheKey, byDate);
+      return byDate;
+    } catch (e) {
+      console.error('[gcal] erro ao buscar eventos:', e);
+      return {};
+    }
+  }
+
+  return { configure, isAvailable, isConnected, connect, disconnect, createEvent, deleteEvent, getMonthEvents, clearCache, nextDayKey };
 });
