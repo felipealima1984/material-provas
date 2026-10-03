@@ -409,6 +409,36 @@
     background:var(--surface); border:1px solid var(--border); color:var(--text);
     border-radius:6px; padding:7px 10px; font-size:0.85rem; width:100%; box-sizing:border-box; font-family:inherit; }
 
+  /* ══ TIMER POMODORO/CRONÔMETRO ══ */
+  .timer-btn {
+    position: fixed; bottom: 86px; right: 24px; z-index: 150;
+    background: var(--surface); border: 1px solid var(--border); color: var(--accent);
+    border-radius: 50px; padding: 10px 18px; font-size: 0.82rem; font-weight: 700;
+    cursor: pointer; box-shadow: 0 4px 20px rgba(0,0,0,0.15);
+    display: flex; align-items: center; gap: 8px; transition: all 0.2s;
+  }
+  .timer-btn:hover { transform: translateY(-2px); border-color: var(--accent); }
+  .timer-modal-bg { display:none; position:fixed; inset:0; background:rgba(0,0,0,.7);
+    z-index:300; align-items:center; justify-content:center; padding:16px; }
+  .timer-modal-bg.aberto { display:flex; }
+  .timer-modal { background:var(--surface); border:1px solid var(--border); border-radius:14px;
+    padding:24px; width:min(360px,92vw); display:flex; flex-direction:column; align-items:center; gap:14px; }
+  .timer-modal-header { display:flex; align-items:center; justify-content:space-between; width:100%; }
+  .timer-modal-header h3 { margin:0; font-size:1.05rem; color:var(--accent); }
+  .timer-tabs { display:flex; gap:6px; }
+  .timer-tab-btn { background:var(--surface2); border:1px solid var(--border); color:var(--muted);
+    padding:5px 14px; border-radius:16px; font-size:0.8rem; cursor:pointer; }
+  .timer-tab-btn.ativo { background:var(--accent); border-color:var(--accent); color:#fff; }
+  .timer-display { font-size:3rem; font-weight:800; font-variant-numeric:tabular-nums; color:var(--text); }
+  .timer-fase { font-size:0.82rem; color:var(--muted); text-transform:uppercase; letter-spacing:0.08em; }
+  .timer-controles { display:flex; gap:8px; }
+  .timer-controles button { padding:8px 18px; border-radius:20px; font-size:0.85rem; cursor:pointer;
+    border:1px solid var(--border); background:var(--surface2); color:var(--text); }
+  .timer-controles .btn-primario { background:var(--accent); border-color:var(--accent); color:#fff; }
+  .timer-config { display:flex; gap:10px; font-size:0.78rem; color:var(--muted); align-items:center; }
+  .timer-config input { width:48px; text-align:center; background:var(--surface2); border:1px solid var(--border);
+    color:var(--text); border-radius:6px; padding:3px 4px; }
+
 
   /* ══ LOGIN ══ */
   #mp-login {
@@ -6734,6 +6764,217 @@ function fecharRevisao() {
   document.getElementById('revisao-modal').classList.remove('aberto');
 }
 
+// ══════════════════════════════════════════════
+// TIMER POMODORO/CRONÔMETRO — portado de js/timerWidget.js (Mirante).
+// Persistido em localStorage (timestamps de relógio, não contador em
+// memória) — sobrevive a refresh/fechar aba, inclusive avançando em
+// silêncio fases de Pomodoro perdidas enquanto a aba estava fechada.
+// ══════════════════════════════════════════════
+const TIMER_STATE_KEY = 'mp_timerState';
+let timerModo = 'pomodoro';
+let pomodoroFase = 'focus';
+let pomodoroWorkMin = 25;
+let pomodoroBreakMin = 5;
+let pomodoroRemainingSec = pomodoroWorkMin * 60;
+let pomodoroTargetEndAt = null;
+let pomodoroRunning = false;
+let timerIntervalId = null;
+let stopwatchElapsedMs = 0;
+let stopwatchStartedAt = null;
+let stopwatchRunning = false;
+
+function timerSalvar() {
+  try {
+    localStorage.setItem(TIMER_STATE_KEY, JSON.stringify({
+      timerModo, pomodoroFase, pomodoroWorkMin, pomodoroBreakMin,
+      pomodoroRemainingSec, pomodoroTargetEndAt, pomodoroRunning,
+      stopwatchElapsedMs, stopwatchStartedAt, stopwatchRunning
+    }));
+  } catch (e) {}
+}
+
+function timerCarregar() {
+  try {
+    const raw = localStorage.getItem(TIMER_STATE_KEY);
+    if (!raw) return;
+    const s = JSON.parse(raw);
+    timerModo = s.timerModo || 'pomodoro';
+    pomodoroFase = s.pomodoroFase || 'focus';
+    pomodoroWorkMin = s.pomodoroWorkMin || 25;
+    pomodoroBreakMin = s.pomodoroBreakMin || 5;
+    pomodoroRemainingSec = typeof s.pomodoroRemainingSec === 'number' ? s.pomodoroRemainingSec : pomodoroWorkMin * 60;
+    pomodoroTargetEndAt = s.pomodoroTargetEndAt || null;
+    pomodoroRunning = !!s.pomodoroRunning;
+    stopwatchElapsedMs = s.stopwatchElapsedMs || 0;
+    stopwatchStartedAt = s.stopwatchStartedAt || null;
+    stopwatchRunning = !!s.stopwatchRunning;
+    // Avança fases de Pomodoro vencidas enquanto a aba estava fechada,
+    // em silêncio (sem beep retroativo) — só a fase/tempo são corrigidos.
+    if (timerModo === 'pomodoro' && pomodoroRunning && pomodoroTargetEndAt) {
+      let restante = Math.ceil((pomodoroTargetEndAt - Date.now()) / 1000);
+      let guard = 0;
+      while (restante <= 0 && guard < 500) {
+        pomodoroFase = pomodoroFase === 'focus' ? 'break' : 'focus';
+        const faseSec = (pomodoroFase === 'focus' ? pomodoroWorkMin : pomodoroBreakMin) * 60;
+        pomodoroTargetEndAt += faseSec * 1000;
+        restante = Math.ceil((pomodoroTargetEndAt - Date.now()) / 1000);
+        guard++;
+      }
+      pomodoroRemainingSec = Math.max(0, restante);
+    }
+  } catch (e) {}
+}
+
+function timerBeep() {
+  try {
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    const ctx = new Ctx();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.frequency.value = 880;
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    gain.gain.setValueAtTime(0.2, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.5);
+    osc.start();
+    osc.stop(ctx.currentTime + 0.5);
+  } catch (e) {}
+}
+function timerNotificar(novaFase) {
+  if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return;
+  const title = novaFase === 'focus' ? '🎯 Hora de focar' : '☕ Hora da pausa';
+  const body = novaFase === 'focus' ? `Pausa terminada — ${pomodoroWorkMin} min de foco.` : `Foco terminado — ${pomodoroBreakMin} min de pausa.`;
+  try { new Notification(title, { body }); } catch (e) {}
+}
+
+function timerPomodoroRestanteSec() {
+  if (!pomodoroRunning || !pomodoroTargetEndAt) return pomodoroRemainingSec;
+  return Math.max(0, Math.ceil((pomodoroTargetEndAt - Date.now()) / 1000));
+}
+function timerStopwatchElapsedMs() {
+  return stopwatchElapsedMs + (stopwatchRunning && stopwatchStartedAt != null ? Date.now() - stopwatchStartedAt : 0);
+}
+function timerFormatar(totalSec) {
+  totalSec = Math.max(0, Math.round(totalSec));
+  const m = Math.floor(totalSec / 60), s = totalSec % 60;
+  return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+}
+function timerFormatarMs(ms) {
+  const totalCentis = Math.floor(ms / 10);
+  const centis = totalCentis % 100;
+  const totalSec = Math.floor(ms / 1000);
+  const s = totalSec % 60, m = Math.floor(totalSec / 60);
+  return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}.${String(centis).padStart(2, '0')}`;
+}
+
+function timerAtualizarUI() {
+  const display = document.getElementById('timer-display');
+  if (!display) return;
+  const btn = document.getElementById('timer-btn-play');
+  const faseLabel = document.getElementById('timer-fase-label');
+  const config = document.getElementById('timer-config');
+  document.querySelectorAll('.timer-tab-btn').forEach(b => b.classList.toggle('ativo', b.dataset.timerTab === timerModo));
+  if (timerModo === 'pomodoro') {
+    config.style.display = 'flex';
+    faseLabel.style.display = 'block';
+    faseLabel.textContent = pomodoroFase === 'focus' ? '🎯 Foco' : '☕ Pausa';
+    display.textContent = timerFormatar(timerPomodoroRestanteSec());
+    btn.textContent = pomodoroRunning ? '⏸ Pausar' : '▶ Iniciar';
+  } else {
+    config.style.display = 'none';
+    faseLabel.style.display = 'none';
+    display.textContent = timerFormatarMs(timerStopwatchElapsedMs());
+    btn.textContent = stopwatchRunning ? '⏸ Pausar' : '▶ Iniciar';
+  }
+}
+
+function timerTick() {
+  if (timerModo === 'pomodoro' && pomodoroRunning) {
+    const restante = timerPomodoroRestanteSec();
+    if (restante <= 0) {
+      timerBeep();
+      const novaFase = pomodoroFase === 'focus' ? 'break' : 'focus';
+      timerNotificar(novaFase);
+      pomodoroFase = novaFase;
+      const faseSec = (pomodoroFase === 'focus' ? pomodoroWorkMin : pomodoroBreakMin) * 60;
+      pomodoroTargetEndAt = Date.now() + faseSec * 1000;
+      timerSalvar();
+    }
+  }
+  timerAtualizarUI();
+}
+
+function timerIniciarLoop() {
+  if (timerIntervalId) return;
+  timerIntervalId = setInterval(timerTick, 250);
+}
+
+function timerMudarModo(modo) {
+  timerModo = modo;
+  timerSalvar();
+  timerAtualizarUI();
+}
+
+function timerToggle() {
+  if (timerModo === 'pomodoro') {
+    if (pomodoroRunning) {
+      pomodoroRemainingSec = timerPomodoroRestanteSec();
+      pomodoroRunning = false;
+      pomodoroTargetEndAt = null;
+    } else {
+      pomodoroRunning = true;
+      pomodoroTargetEndAt = Date.now() + pomodoroRemainingSec * 1000;
+      if (typeof Notification !== 'undefined' && Notification.permission === 'default') Notification.requestPermission();
+    }
+  } else {
+    if (stopwatchRunning) {
+      stopwatchElapsedMs = timerStopwatchElapsedMs();
+      stopwatchRunning = false;
+      stopwatchStartedAt = null;
+    } else {
+      stopwatchRunning = true;
+      stopwatchStartedAt = Date.now();
+    }
+  }
+  timerSalvar();
+  timerAtualizarUI();
+}
+
+function timerResetar() {
+  if (timerModo === 'pomodoro') {
+    pomodoroFase = 'focus';
+    pomodoroRunning = false;
+    pomodoroTargetEndAt = null;
+    pomodoroRemainingSec = pomodoroWorkMin * 60;
+  } else {
+    stopwatchRunning = false;
+    stopwatchStartedAt = null;
+    stopwatchElapsedMs = 0;
+  }
+  timerSalvar();
+  timerAtualizarUI();
+}
+
+function timerAjustarConfig() {
+  const w = parseInt(document.getElementById('timer-work-min').value, 10);
+  const b = parseInt(document.getElementById('timer-break-min').value, 10);
+  pomodoroWorkMin = (w > 0 && w <= 120) ? w : pomodoroWorkMin;
+  pomodoroBreakMin = (b > 0 && b <= 60) ? b : pomodoroBreakMin;
+  if (!pomodoroRunning) pomodoroRemainingSec = (pomodoroFase === 'focus' ? pomodoroWorkMin : pomodoroBreakMin) * 60;
+  timerSalvar();
+  timerAtualizarUI();
+}
+
+function abrirTimer() {
+  document.getElementById('timer-modal').classList.add('aberto');
+  document.getElementById('timer-work-min').value = pomodoroWorkMin;
+  document.getElementById('timer-break-min').value = pomodoroBreakMin;
+  timerAtualizarUI();
+}
+function fecharTimer() {
+  document.getElementById('timer-modal').classList.remove('aberto');
+}
+
 // ── Iniciar o app ──
 function iniciarApp() {
   diagRegistrar('iniciarApp', 'iniciando, build=' + BUILD_VERSAO);
@@ -7171,12 +7412,39 @@ document.addEventListener('DOMContentLoaded', async function() {
   document.getElementById('crud-modal').addEventListener('click',function(e){if(e.target===this)crudFechar();});
   document.getElementById('mp-admin-overlay').addEventListener('click',function(e){if(e.target===this)mpFecharAdmin();});
   document.getElementById('revisao-modal').addEventListener('click',function(e){if(e.target===this)fecharRevisao();});
+  document.getElementById('timer-modal').addEventListener('click',function(e){if(e.target===this)fecharTimer();});
+  timerCarregar();
+  timerIniciarLoop();
   iniciarApp();
 });
 </script>
 
 <!-- INDUÇÃO DE FOCO -->
 <button class="inducao-btn" onclick="abrirInducao()">🔵 Indução de Foco</button>
+<button class="timer-btn" onclick="abrirTimer()">⏱ Timer</button>
+
+<div class="timer-modal-bg" id="timer-modal">
+  <div class="timer-modal">
+    <div class="timer-modal-header">
+      <h3>⏱ Timer</h3>
+      <button class="revisao-fechar" onclick="fecharTimer()">✕</button>
+    </div>
+    <div class="timer-tabs">
+      <button class="timer-tab-btn" data-timer-tab="pomodoro" onclick="timerMudarModo('pomodoro')">Pomodoro</button>
+      <button class="timer-tab-btn" data-timer-tab="stopwatch" onclick="timerMudarModo('stopwatch')">Cronômetro</button>
+    </div>
+    <div class="timer-fase" id="timer-fase-label">Foco</div>
+    <div class="timer-display" id="timer-display">25:00</div>
+    <div class="timer-config" id="timer-config">
+      <span>Foco <input type="number" id="timer-work-min" min="1" max="120" value="25" onchange="timerAjustarConfig()"> min</span>
+      <span>Pausa <input type="number" id="timer-break-min" min="1" max="60" value="5" onchange="timerAjustarConfig()"> min</span>
+    </div>
+    <div class="timer-controles">
+      <button id="timer-btn-play" class="btn-primario" onclick="timerToggle()">▶ Iniciar</button>
+      <button onclick="timerResetar()">↺ Resetar</button>
+    </div>
+  </div>
+</div>
 
 <div class="inducao-overlay" id="inducao-overlay">
   <div class="inducao-panel">
