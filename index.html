@@ -118,6 +118,13 @@
     display: flex; justify-content: space-between;
     font-size: 0.72rem; color: var(--muted);
   }
+  .player-resume {
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    background: rgba(251,191,36,0.1); border: 1px solid var(--yellow);
+    border-radius: 8px; padding: 6px 10px; font-size: 0.78rem; color: var(--yellow);
+  }
+  .player-resume[hidden] { display: none; }
+  .player-resume span { flex: 1; min-width: 140px; }
   .highlight-word {
     background: rgba(108,140,255,0.25);
     border-radius: 3px;
@@ -507,6 +514,11 @@
     <button class="player-btn stop" onclick="pararLeitura()" title="Parar">■</button>
     <button class="player-btn skip" onclick="pularPalavras(+10)" title="Avançar 10 palavras">▶▶</button>
     <button class="player-btn skip" onclick="pularPalavras(+30)" title="Avançar 30 palavras">⏭</button>
+  </div>
+  <div class="player-resume" id="player-resume" hidden>
+    <span id="player-resume-texto"></span>
+    <button class="speed-btn" onclick="continuarLeituraPendente()" title="Continuar leitura">▶️ Continuar</button>
+    <button class="speed-btn" onclick="descartarLeituraPendente()" title="Descartar">✕</button>
   </div>
   <div class="player-speed">
     <span class="speed-label">Velocidade:</span>
@@ -4820,17 +4832,22 @@ const CADEIRAS = [
 ];
 
 let cadeiraAtual = -1;
-let spans = [];        // spans de cada palavra no DOM
-let idxPalavra = 0;
+let spans = [];        // spans de cada palavra no DOM (um por <span class="pw">)
+let textoFala = '';    // texto completo da cadeira atual, concatenado p/ síntese (ver construirTextoFala)
+let ttsSpans = [];     // [{start, end, el}] — offset de char de cada palavra dentro de textoFala
+let idxPalavra = 0;    // índice da palavra atual em spans/ttsSpans (não mais "chunk em andamento")
 let lendo = false;
 let pausado = false;
 let velocidade = 1.0;
 let intervaloTimer = null;
 let proximaCadeira = -1;
-let chunkAtivo = false; // flag anti-duplicação
 let _chromeKeepAlive = null; // workaround bug Chrome SpeechSynthesis 15s
 let _vozSelecionada = null;  // voz preferida para pt-BR
 const _isChrome = /Chrome/.test(navigator.userAgent) && !/Edg|OPR/.test(navigator.userAgent);
+let _speechToken = 0;  // ignora eventos de utterances obsoletos (ver startUtteranceFrom)
+let _estimTimer = null; // fallback por tempo estimado p/ vozes Google (sem onboundary confiável)
+let pendingResume = null; // { cadeiraIdx, idxPalavra, rate, voiceURI } vindo de um refresh — nunca autoplay
+const TTS_STATE_KEY = 'mp_ttsState';
 
 // Selecionar melhor voz pt-BR disponível e popular o <select>
 function _selecionarVoz() {
@@ -4886,11 +4903,9 @@ function trocarVoz(nome) {
   const voz = vozes.find(v => v.name === nome);
   if (voz) {
     _vozSelecionada = voz;
-    // Se estiver lendo, reiniciar o chunk com a nova voz
+    // Se estiver lendo, reiniciar a fala do ponto atual com a nova voz
     if (lendo && !pausado) {
-      speechSynthesis.cancel();
-      chunkAtivo = false;
-      setTimeout(() => { if (lendo && !pausado) lerChunk(true); }, 120);
+      setTimeout(() => startUtteranceFrom(idxPalavra), 120);
     }
   }
 }
@@ -4916,6 +4931,66 @@ function irParaCadeira(idx) {
   el.scrollIntoView({ behavior: 'smooth', block: 'start' });
   resetPlayer();
   prepararSpans(idx);
+  verificarResumoPendente(idx);
+}
+
+// ── RETOMAR LEITURA APÓS REFRESH (nunca autoplay) ──
+function persistirTtsState() {
+  if (!lendo && !pausado) return;
+  try {
+    localStorage.setItem(TTS_STATE_KEY, JSON.stringify({
+      cadeiraIdx: cadeiraAtual, idxPalavra,
+      rate: velocidade, voiceURI: _vozSelecionada ? _vozSelecionada.name : ''
+    }));
+  } catch (e) {}
+}
+function limparTtsState() {
+  try { localStorage.removeItem(TTS_STATE_KEY); } catch (e) {}
+}
+function verificarResumoPendente(idx) {
+  pendingResume = null;
+  const banner = document.getElementById('player-resume');
+  if (banner) banner.hidden = true;
+  try {
+    const raw = localStorage.getItem(TTS_STATE_KEY);
+    if (!raw) return;
+    const st = JSON.parse(raw);
+    if (st && st.cadeiraIdx === idx && typeof st.idxPalavra === 'number' && st.idxPalavra > 0 && st.idxPalavra < spans.length) {
+      pendingResume = st;
+      const texto = document.getElementById('player-resume-texto');
+      if (texto) texto.textContent = `↩️ Leitura pausada na palavra ${st.idxPalavra + 1} de ${spans.length} — continuar?`;
+      if (banner) banner.hidden = false;
+    }
+  } catch (e) {}
+}
+function continuarLeituraPendente() {
+  if (!pendingResume) return;
+  const r = pendingResume;
+  if (r.voiceURI) {
+    const v = speechSynthesis.getVoices().find(v => v.name === r.voiceURI);
+    if (v) {
+      _vozSelecionada = v;
+      const sel = document.getElementById('select-voz');
+      if (sel) sel.value = v.name;
+    }
+  }
+  if (r.rate) {
+    velocidade = r.rate;
+    const label = velocidade % 1 === 0 ? velocidade.toFixed(1) : velocidade.toFixed(2);
+    const sv = document.getElementById('speed-valor');
+    if (sv) sv.textContent = label + '×';
+  }
+  const idx = r.idxPalavra;
+  pendingResume = null;
+  const banner = document.getElementById('player-resume');
+  if (banner) banner.hidden = true;
+  startUtteranceFrom(idx);
+}
+function descartarLeituraPendente() {
+  pendingResume = null;
+  limparTtsState();
+  const banner = document.getElementById('player-resume');
+  if (banner) banner.hidden = true;
 }
 
 // ── PREPARAÇÃO: wrapping de palavras em <span> ──
@@ -5230,53 +5305,56 @@ function prepararSpans(idx) {
     textNode.replaceWith(fragment);
   });
 
+  // Monta o texto completo de síntese (textoFala) e o índice de offsets
+  // (ttsSpans) a partir dos spans recém-criados — uma só leitura contínua
+  // em vez de chunks de 10 palavras, com seek real via char offset.
+  textoFala = '';
+  ttsSpans = [];
+  spans.forEach((sp, i) => {
+    const fala = sp.getAttribute('data-fala') || sp.textContent;
+    if (i > 0) textoFala += (sp.getAttribute('data-pausa') === '1') ? ', ' : ' ';
+    const start = textoFala.length;
+    textoFala += fala;
+    ttsSpans.push({ start, end: start + fala.length, el: sp });
+  });
+
   idxPalavra = 0;
-  atualizarProgresso();
   document.getElementById('player-progresso').textContent = '0 / ' + spans.length + ' palavras';
 }
 
 
 
 function pularPalavras(delta) {
-  if (spans.length === 0) return;
-  const novoIdx = Math.max(0, Math.min(spans.length - 1, idxPalavra + delta));
-  const estavaTocando = lendo && !pausado;
-  speechSynthesis.cancel();
-  chunkAtivo = false;
-  idxPalavra = novoIdx;
-  atualizarProgresso();
-  highlightPalavra(novoIdx);
-  scrollToHighlight();
-  if (estavaTocando) {
-    setTimeout(() => { if (lendo && !pausado) lerChunk(true); }, 120);
+  if (!ttsSpans.length) return;
+  const novoIdx = Math.max(0, Math.min(ttsSpans.length - 1, idxPalavra + delta));
+  if (lendo && !pausado) {
+    startUtteranceFrom(novoIdx);
+  } else {
+    idxPalavra = novoIdx;
+    highlightAt(ttsSpans[novoIdx].start);
   }
 }
 
 function clicarProgressBar(event) {
-  if (spans.length === 0) return;
+  if (!ttsSpans.length) return;
   const bar = document.getElementById('progress-bar');
   const rect = bar.getBoundingClientRect();
   const pct = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width));
-  const novoIdx = Math.floor(pct * spans.length);
-  pularPalavras(novoIdx - idxPalavra);
+  const novoIdx = Math.min(ttsSpans.length - 1, Math.floor(pct * ttsSpans.length));
+  if (lendo && !pausado) startUtteranceFrom(novoIdx);
+  else { idxPalavra = novoIdx; highlightAt(ttsSpans[novoIdx].start); }
 }
 
 function togglePlay() {
+  if (pendingResume) { continuarLeituraPendente(); return; }
   if (!lendo && !pausado) iniciarLeitura();
   else if (lendo && !pausado) pausarLeitura();
   else if (pausado) retomarLeitura();
 }
 
 function iniciarLeitura() {
-  if (cadeiraAtual < 0 || spans.length === 0) return;
-  // iOS Safari: cancelar qualquer utterance pendente antes de iniciar
-  speechSynthesis.cancel();
-  lendo = true;
-  pausado = false;
-  chunkAtivo = false;
-  document.getElementById('btn-play').textContent = '⏸';
-  // Chamar diretamente (não via setTimeout) para manter o user gesture no iOS
-  lerChunk(true);
+  if (cadeiraAtual < 0 || !ttsSpans.length) return;
+  startUtteranceFrom(0);
 }
 
 function _startChromeKeepAlive() {
@@ -5296,125 +5374,112 @@ function _stopChromeKeepAlive() {
   }
 }
 
-function lerChunk(direto) {
-  // direto=true: chamada direta de um evento de clique (iOS precisa disto)
-  if (chunkAtivo || !lendo || pausado || idxPalavra >= spans.length) {
-    if (idxPalavra >= spans.length && lendo) finalizarCadeira();
-    return;
-  }
-  chunkAtivo = true;
+// Inicia (ou reinicia, ao avançar/voltar pela barra ou pelos botões de
+// skip) a fala a partir da palavra de índice `idxInicial`. Cortar o texto
+// e falar só o resto é a única forma de "avançar" com a Web Speech API —
+// ela não tem seek nativo. `_speechToken` garante que só o utterance mais
+// recente possa alterar o estado (evita que o onerror/"interrupted" de um
+// utterance cancelado por um seek novo sobrescreva o que já começou).
+function startUtteranceFrom(idxInicial) {
+  if (!ttsSpans.length) return;
+  idxInicial = Math.max(0, Math.min(ttsSpans.length - 1, idxInicial));
+  const charOffset = ttsSpans[idxInicial].start;
+  const remaining = textoFala.slice(charOffset);
+  speechSynthesis.cancel();
+  if (_estimTimer) { clearInterval(_estimTimer); _estimTimer = null; }
 
-  // Chunk menor = sync de palavra mais preciso
-  const CHUNK = 10;
-  const fim = Math.min(idxPalavra + CHUNK, spans.length);
-  const inicio = idxPalavra;
-  // Montar trecho com texto limpo para síntese
-  // Montar trecho respeitando pausas entre blocos
-  const partesTrecho = [];
-  for (let i = inicio; i < fim; i++) {
-    const s = spans[i];
-    const fala = s.getAttribute('data-fala') || s.textContent;
-    // Pausa entre blocos: inserir vírgula antes da palavra que inicia novo bloco
-    if (i > inicio && s.getAttribute('data-pausa') === '1') {
-      partesTrecho.push(',');
-    }
-    partesTrecho.push(fala);
-  }
-  const trecho = partesTrecho.join(' ').replace(/\s*,\s*/g, ', ');
-
-  const utt = new SpeechSynthesisUtterance(trecho);
+  const utt = new SpeechSynthesisUtterance(remaining);
   utt.lang = 'pt-BR';
   // Chrome limita o rate real das vozes pt-BR — aplicar fator de compensação
   const fatorChrome = _isChrome ? 1.35 : 1.0;
   utt.rate = Math.min(10, velocidade * fatorChrome);
   if (_vozSelecionada) utt.voice = _vozSelecionada;
 
-  // Detectar se a voz é Google (não dispara onboundary confiável)
+  // Detectar se a voz é Google (não dispara onboundary confiável) — usa
+  // fallback por tempo estimado, igual ao mecanismo anterior, só que
+  // agora cobrindo o texto restante inteiro em vez de um chunk de 10.
   const vozNome = (_vozSelecionada ? _vozSelecionada.name : '').toLowerCase();
   const vozGoogle = vozNome.includes('google');
-  const palavrasChunk = trecho.split(' ');
-  const numPalavras = palavrasChunk.length;
+  const palavrasRestantes = ttsSpans.length - idxInicial;
 
-  // Opção B: fallback por tempo para vozes Google
-  let _estimTimer = null;
-  if (vozGoogle && numPalavras > 0) {
-    // Estimar duração total do chunk baseado na velocidade e número de caracteres
-    const charsTotal = trecho.length;
-    const duracaoEstimada = (charsTotal / 15) / (velocidade * (_isChrome ? 1.35 : 1.0)) * 1000;
-    const msPorPalavra = duracaoEstimada / numPalavras;
-    let pIdx = 0;
+  const myToken = ++_speechToken;
+
+  if (vozGoogle && palavrasRestantes > 0) {
+    const duracaoEstimada = (remaining.length / 15) / (velocidade * fatorChrome) * 1000;
+    const msPorPalavra = duracaoEstimada / palavrasRestantes;
+    let pIdx = idxInicial;
     _estimTimer = setInterval(() => {
-      if (!lendo || pausado) { clearInterval(_estimTimer); return; }
-      const idxGlobal = Math.min(inicio + pIdx, fim - 1);
-      if (idxGlobal < spans.length) destacarPalavra(idxGlobal);
-      pIdx++;
-      if (pIdx >= numPalavras) clearInterval(_estimTimer);
+      if (_speechToken !== myToken) { clearInterval(_estimTimer); return; }
+      if (pIdx < ttsSpans.length) { highlightAt(ttsSpans[pIdx].start); pIdx++; }
+      else clearInterval(_estimTimer);
     }, msPorPalavra);
   }
 
   utt.onboundary = (e) => {
-    if (vozGoogle) return; // Google: usa estimativa por tempo
-    if (e.name !== 'word') return;
-    // Mapear charIndex do trecho → índice da palavra no span global
-    let acum = 0, idxLocal = 0;
-    for (let i = 0; i < palavrasChunk.length; i++) {
-      if (acum >= e.charIndex) { idxLocal = i; break; }
-      acum += palavrasChunk[i].length + 1;
-      idxLocal = i + 1;
-    }
-    idxLocal = Math.min(idxLocal, fim - inicio - 1);
-    const idxGlobal = inicio + idxLocal;
-    if (idxGlobal < spans.length) destacarPalavra(idxGlobal);
+    if (_speechToken !== myToken) return;
+    if (vozGoogle) return; // Google: usa a estimativa por tempo acima
+    if (e.name && e.name !== 'word') return;
+    highlightAt(charOffset + e.charIndex);
   };
 
-;
-
   utt.onend = () => {
-    if (_estimTimer) { clearInterval(_estimTimer); }
-    if (!lendo) { chunkAtivo = false; return; }
-    spans.slice(inicio, fim).forEach(s => s.classList.remove('pw-ativo'));
-    idxPalavra = fim;
-    chunkAtivo = false;
-    atualizarProgresso();
-    // Chunks subsequentes: setTimeout é ok pois o áudio já foi desbloqueado
-    setTimeout(() => { if (lendo && !pausado) lerChunk(false); }, 30);
+    if (_speechToken !== myToken) return;
+    if (_estimTimer) { clearInterval(_estimTimer); _estimTimer = null; }
+    lendo = false; pausado = false;
+    spans.forEach(s => s.classList.remove('pw-ativo'));
+    document.getElementById('btn-play').textContent = '▶';
+    document.getElementById('progress-fill').style.width = '100%';
+    limparTtsState();
+    _stopChromeKeepAlive();
+    const prox = cadeiraAtual + 1;
+    if (prox < CADEIRAS.length) { proximaCadeira = prox; iniciarIntervalo(); }
   };
 
   utt.onerror = (e) => {
-    if (_estimTimer) { clearInterval(_estimTimer); }
-    chunkAtivo = false;
-    if (lendo && e.error !== 'interrupted') setTimeout(() => lerChunk(false), 100);
+    if (_speechToken !== myToken) return; // utterance obsoleto (substituído por um seek) — esperado
+    if (_estimTimer) { clearInterval(_estimTimer); _estimTimer = null; }
+    lendo = false; pausado = false;
+    _stopChromeKeepAlive();
+    document.getElementById('btn-play').textContent = '▶';
+    if (e && e.error === 'interrupted') return;
   };
 
-  // iOS Safari: speak() deve ser chamado de forma síncrona na primeira vez
-  speechSynthesis.speak(utt);
-  // Iniciar keepalive Chrome na primeira utterance de cada sessão
+  lendo = true;
+  pausado = false;
+  idxPalavra = idxInicial;
+  document.getElementById('btn-play').textContent = '⏸';
+  highlightAt(charOffset);
+  // pequeno atraso: falar logo após cancel() é ignorado em alguns navegadores
+  setTimeout(() => speechSynthesis.speak(utt), 60);
   if (!_chromeKeepAlive) _startChromeKeepAlive();
 }
 
-function destacarPalavra(idx) {
-  // Remover highlight anterior
+// Destaca a palavra correspondente a `charIndex` dentro de textoFala,
+// localizando-a em ttsSpans (array ordenado por start) — chamado tanto
+// pelo onboundary real quanto pelo fallback por tempo (voz Google).
+function highlightAt(charIndex) {
   spans.forEach(s => s.classList.remove('pw-ativo'));
-  if (idx < spans.length) {
-    const sp = spans[idx];
-    sp.classList.add('pw-ativo');
+  let match = null, matchIdx = -1;
+  for (let i = 0; i < ttsSpans.length; i++) {
+    if (ttsSpans[i].start <= charIndex) { match = ttsSpans[i]; matchIdx = i; }
+    else break;
+  }
+  if (match) {
+    match.el.classList.add('pw-ativo');
+    idxPalavra = matchIdx;
 
     // Scroll suave para a palavra — abaixo do player fixo
     const playerH = document.getElementById('player').offsetHeight + 16;
-    const rect = sp.getBoundingClientRect();
+    const rect = match.el.getBoundingClientRect();
     if (rect.top < playerH + 40 || rect.bottom > window.innerHeight - 40) {
-      window.scrollTo({
-        top: window.scrollY + rect.top - playerH - 60,
-        behavior: 'smooth'
-      });
+      window.scrollTo({ top: window.scrollY + rect.top - playerH - 60, behavior: 'smooth' });
     }
-
-    // Atualizar player
-    document.getElementById('player-palavra').textContent = sp.textContent;
-    document.getElementById('player-progresso').textContent = `${idx + 1} / ${spans.length} palavras`;
-    const pct = ((idx + 1) / spans.length) * 100;
-    document.getElementById('progress-fill').style.width = pct + '%';
+    document.getElementById('player-palavra').textContent = match.el.textContent;
   }
+  const pct = ttsSpans.length ? ((matchIdx + 1) / ttsSpans.length) * 100 : 0;
+  document.getElementById('progress-fill').style.width = pct + '%';
+  document.getElementById('player-progresso').textContent = `${matchIdx + 1} / ${ttsSpans.length} palavras`;
+  persistirTtsState();
 }
 
 function pausarLeitura() {
@@ -5423,26 +5488,27 @@ function pausarLeitura() {
   speechSynthesis.pause();
   _stopChromeKeepAlive();
   document.getElementById('btn-play').textContent = '▶';
+  persistirTtsState();
 }
 
 function retomarLeitura() {
   pausado = false;
-  lendo = true;
-  chunkAtivo = false;
-  speechSynthesis.cancel();
-  _stopChromeKeepAlive();
-  document.getElementById('btn-play').textContent = '⏸';
-  setTimeout(() => { if (lendo && !pausado) { _startChromeKeepAlive(); lerChunk(true); } }, 120);
+  // Reconstruir o utterance a partir da palavra atual é mais confiável
+  // entre navegadores do que confiar em speechSynthesis.resume() sozinho
+  // (mesma abordagem já usada no seek).
+  setTimeout(() => startUtteranceFrom(idxPalavra), 120);
 }
 
 function pararLeitura() {
   lendo = false;
   pausado = false;
-  chunkAtivo = false;
+  _speechToken++; // invalida qualquer utterance/estimTimer em andamento
+  if (_estimTimer) { clearInterval(_estimTimer); _estimTimer = null; }
   speechSynthesis.cancel();
   _stopChromeKeepAlive();
   spans.forEach(s => s.classList.remove('pw-ativo'));
   document.getElementById('btn-play').textContent = '▶';
+  limparTtsState();
 }
 
 function resetPlayer() {
@@ -5451,26 +5517,6 @@ function resetPlayer() {
   document.getElementById('progress-fill').style.width = '0%';
   document.getElementById('player-palavra').textContent = '—';
   document.getElementById('player-progresso').textContent = '0 / 0 palavras';
-}
-
-function atualizarProgresso() {
-  const pct = spans.length > 0 ? (idxPalavra / spans.length) * 100 : 0;
-  document.getElementById('progress-fill').style.width = pct + '%';
-  document.getElementById('player-progresso').textContent = `${idxPalavra} / ${spans.length} palavras`;
-}
-
-function finalizarCadeira() {
-  lendo = false;
-  pausado = false;
-  chunkAtivo = false;
-  document.getElementById('btn-play').textContent = '▶';
-  document.getElementById('progress-fill').style.width = '100%';
-  spans.forEach(s => s.classList.remove('pw-ativo'));
-  const prox = cadeiraAtual + 1;
-  if (prox < CADEIRAS.length) {
-    proximaCadeira = prox;
-    iniciarIntervalo();
-  }
 }
 
 // ── VELOCIDADE ──
@@ -5486,10 +5532,8 @@ function ajustarVelocidade(direcao) {
   const label = nova % 1 === 0 ? nova.toFixed(1) : nova.toFixed(2);
   document.getElementById('speed-valor').textContent = label + '×';
   if (lendo && !pausado) {
-    speechSynthesis.cancel();
-    chunkAtivo = false;
     // Aguardar cancel() terminar antes de retomar (assíncrono no browser)
-    setTimeout(() => { if (lendo && !pausado) lerChunk(true); }, 120);
+    setTimeout(() => startUtteranceFrom(idxPalavra), 120);
   }
 }
 
@@ -5498,9 +5542,7 @@ function setVelocidade(v) {
   const label = v % 1 === 0 ? v.toFixed(1) : v.toFixed(2);
   document.getElementById('speed-valor').textContent = label + '×';
   if (lendo && !pausado) {
-    speechSynthesis.cancel();
-    chunkAtivo = false;
-    setTimeout(() => { if (lendo && !pausado) lerChunk(true); }, 120);
+    setTimeout(() => startUtteranceFrom(idxPalavra), 120);
   }
 }
 
