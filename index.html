@@ -380,6 +380,35 @@
   .crud-modal-btns .btn-confirm { background:var(--accent); border-color:var(--accent); color:#fff; }
   .crud-vazio { text-align:center; padding:60px 20px; color:var(--muted); font-size:0.9rem; }
 
+  /* ══ REVISÃO ESPAÇADA ══ */
+  .revisao-abrir-btn { background:transparent; border:1px dashed var(--border); color:var(--muted);
+    padding:5px 14px; border-radius:20px; font-size:0.8rem; cursor:pointer; transition:all .15s; margin-top:10px; }
+  .revisao-abrir-btn:hover { border-color:var(--accent); color:var(--accent); }
+  .revisao-modal-bg { display:none; position:fixed; inset:0; background:rgba(0,0,0,.7);
+    z-index:300; align-items:center; justify-content:center; padding:16px; }
+  .revisao-modal-bg.aberto { display:flex; }
+  .revisao-modal { background:var(--surface); border:1px solid var(--border); border-radius:14px;
+    padding:20px; width:min(560px,94vw); max-height:88vh; display:flex; flex-direction:column; gap:12px; }
+  .revisao-modal-header { display:flex; align-items:center; justify-content:space-between; }
+  .revisao-modal-header h3 { margin:0; font-size:1.05rem; color:var(--accent); }
+  .revisao-fechar { background:none; border:1px solid var(--border); color:var(--muted);
+    border-radius:20px; padding:4px 12px; font-size:0.8rem; cursor:pointer; }
+  .revisao-tabs { display:flex; gap:6px; flex-wrap:wrap; border-bottom:1px solid var(--border); padding-bottom:10px; }
+  .revisao-tab-btn { background:var(--surface2); border:1px solid var(--border); color:var(--muted);
+    padding:5px 12px; border-radius:16px; font-size:0.78rem; cursor:pointer; }
+  .revisao-tab-btn.ativo { background:var(--accent); border-color:var(--accent); color:#fff; }
+  .revisao-conteudo { overflow-y:auto; padding-right:4px; }
+  .revisao-card { background:var(--surface2); border-radius:8px; padding:10px 12px; margin-bottom:10px; }
+  .revisao-card-titulo { font-weight:700; font-size:0.9rem; display:flex; align-items:center; gap:6px; flex-wrap:wrap; }
+  .revisao-card-sub { font-size:0.78rem; color:var(--muted); margin-top:2px; }
+  .revisao-card-notas { font-size:0.82rem; color:var(--text); margin-top:6px; white-space:pre-wrap; }
+  .revisao-card-btns { display:flex; gap:6px; margin-top:8px; flex-wrap:wrap; }
+  .revisao-chip { background:var(--accent); color:#fff; font-size:0.68rem; font-weight:700;
+    padding:1px 8px; border-radius:10px; }
+  .revisao-form input, .revisao-form select, .revisao-form textarea {
+    background:var(--surface); border:1px solid var(--border); color:var(--text);
+    border-radius:6px; padding:7px 10px; font-size:0.85rem; width:100%; box-sizing:border-box; font-family:inherit; }
+
 
   /* ══ LOGIN ══ */
   #mp-login {
@@ -486,6 +515,23 @@
 <h1>📚 Material de Provas — Nova Roma</h1>
 <p class="sub">Selecione o período · cadeira · unidade para estudar</p>
 <p style="font-size:0.72rem;color:var(--muted);margin-top:4px;">🕐 Última atualização: 02/10/2026</p>
+<button class="revisao-abrir-btn" onclick="abrirRevisao()">📚 Revisão Espaçada</button>
+
+<!-- ══ MODAL REVISÃO ESPAÇADA ══ -->
+<div class="revisao-modal-bg" id="revisao-modal">
+  <div class="revisao-modal">
+    <div class="revisao-modal-header">
+      <h3>📚 Revisão Espaçada</h3>
+      <button class="revisao-fechar" onclick="fecharRevisao()">✕ Fechar</button>
+    </div>
+    <div class="revisao-tabs">
+      <button class="revisao-tab-btn" data-tab="hoje" onclick="revisaoMudarTab('hoje')">Hoje</button>
+      <button class="revisao-tab-btn" data-tab="visao" onclick="revisaoMudarTab('visao')">Visão Geral</button>
+      <button class="revisao-tab-btn" data-tab="assuntos" onclick="revisaoMudarTab('assuntos')">Assuntos</button>
+    </div>
+    <div class="revisao-conteudo" id="revisao-content"></div>
+  </div>
+</div>
 
 <!-- PERÍODOS -->
 <div class="crud-bar" style="margin-top:16px;">
@@ -6398,6 +6444,296 @@ async function mpGetUsers() {
   } catch(e) { console.warn('supabase getUsers:', e); return []; }
 }
 
+// ══════════════════════════════════════════════
+// REVISÃO ESPAÇADA 1-3-7-21 — portado de js/revisaoEngine.js e
+// js/revisaoWidget.js (Mirante), adaptado para persistir em
+// Supabase (tabela mp_revisoes) por usuário logado em vez de
+// localStorage/chrome.storage.sync.
+// ══════════════════════════════════════════════
+
+function escRv(str) {
+  return String(str ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+const REVIEW_OFFSETS = [1, 3, 7, 21];
+function reviewLabel(offset) { return { 1:'1ª revisão', 3:'2ª revisão', 7:'3ª revisão', 21:'4ª revisão' }[offset] || offset + 'd'; }
+function hojeISO() { return new Date().toISOString().slice(0, 10); }
+function addDiasISO(iso, dias) {
+  const d = new Date(iso + 'T00:00:00');
+  d.setDate(d.getDate() + dias);
+  return d.toISOString().slice(0, 10);
+}
+function fmtBRData(iso) {
+  if (!iso) return '—';
+  const [y, m, d] = iso.split('-');
+  return `${d}/${m}/${y}`;
+}
+function makeReviews(dataEstudo) {
+  return REVIEW_OFFSETS.map(offset => ({ offset, date: addDiasISO(dataEstudo, offset), status: 'pending', method: null, secondPassAck: false }));
+}
+
+// "28/set" (como mp_cadeiras.data_prova guarda, sem ano) → ISO, usando o
+// ano corrente como base — suficiente pro caso de uso (provas do semestre
+// em curso). Sem formato reconhecido, retorna null (revisão nunca é
+// marcada como cancelada por prova, mas segue funcionando normalmente).
+const MESES_PT_RV = { jan:0, fev:1, mar:2, abr:3, mai:4, jun:5, jul:6, ago:7, set:8, out:9, nov:10, dez:11 };
+function parseDataProva(str) {
+  if (!str) return null;
+  const m = String(str).trim().match(/^(\d{1,2})\/([a-zçà-ú]{3,})\.?$/i);
+  if (!m) return null;
+  const dia = parseInt(m[1], 10);
+  const mesKey = m[2].toLowerCase().slice(0, 3).normalize('NFD').replace(/[̀-ͯ]/g, '');
+  const mes = MESES_PT_RV[mesKey];
+  if (mes === undefined || !dia) return null;
+  const ano = new Date().getFullYear();
+  return new Date(Date.UTC(ano, mes, dia)).toISOString().slice(0, 10);
+}
+function examDateFor(item) {
+  if (!item.cadeira_nome) return null;
+  for (const per of CRUD.periodos) {
+    const cad = per.cadeiras.find(c => c.nome === item.cadeira_nome);
+    if (cad && cad.data) return parseDataProva(cad.data);
+  }
+  return null;
+}
+function isSkippedRv(review, examDate) {
+  if (!examDate) return false;
+  return review.status !== 'done' && review.date > examDate;
+}
+function isDoneOrSkippedRv(review, examDate) {
+  return review.status === 'done' || isSkippedRv(review, examDate);
+}
+function reviewStateRv(review, examDate, today) {
+  today = today || hojeISO();
+  if (review.status === 'done') return review.method === 'struggle' ? 'done-struggle' : 'done-ok';
+  if (isSkippedRv(review, examDate)) return 'skipped';
+  if (review.date < today) return 'atrasada';
+  if (review.date === today) return 'hoje';
+  return 'futura';
+}
+function isActionableRv(review, examDate, today) {
+  const st = reviewStateRv(review, examDate, today);
+  return st === 'atrasada' || st === 'hoje';
+}
+function recomputeConsolidated(item) {
+  const examDate = examDateFor(item);
+  item.consolidated = item.reviews.every(r => isDoneOrSkippedRv(r, examDate));
+}
+function getActionableList(items, today) {
+  today = today || hojeISO();
+  const list = [];
+  items.forEach(item => {
+    if (item.consolidated) return;
+    const examDate = examDateFor(item);
+    item.reviews.forEach(r => { if (isActionableRv(r, examDate, today)) list.push({ item, review: r, atrasada: r.date < today }); });
+  });
+  return list;
+}
+function getSecondPassList(items, today) {
+  today = today || hojeISO();
+  const list = [];
+  items.forEach(item => {
+    item.reviews.forEach(r => { if (r.status === 'done' && r.method === 'struggle' && !r.secondPassAck && r.date <= today) list.push({ item, review: r }); });
+  });
+  return list;
+}
+function computeStreak(closedDays, today) {
+  today = today || hojeISO();
+  let count = 0, cursor = today;
+  if (!closedDays.includes(cursor)) cursor = addDiasISO(cursor, -1);
+  while (closedDays.includes(cursor)) { count++; cursor = addDiasISO(cursor, -1); }
+  return count;
+}
+function updateClosedDayState(items, closedDays, today) {
+  today = today || hojeISO();
+  const pending = getActionableList(items, today);
+  const idx = closedDays.indexOf(today);
+  if (pending.length === 0) { if (idx === -1) closedDays.push(today); }
+  else if (idx !== -1) closedDays.splice(idx, 1);
+}
+
+const REVISAO = { items: [], closedDays: [], carregado: false };
+
+async function revisaoCarregar() {
+  if (!sb || !_mpUser) return;
+  try {
+    const { data, error } = await sb.from('mp_revisoes').select('*').eq('usuario_login', _mpUser.login).order('criado_em');
+    if (error) { console.warn('revisaoCarregar:', error); return; }
+    REVISAO.items = (data || []).map(row => ({ ...row, reviews: Array.isArray(row.reviews) ? row.reviews : [] }));
+    REVISAO.items.forEach(recomputeConsolidated);
+    const { data: u } = await sb.from('mp_usuarios').select('revisao_closed_days').eq('login', _mpUser.login).maybeSingle();
+    REVISAO.closedDays = (u && Array.isArray(u.revisao_closed_days)) ? u.revisao_closed_days : [];
+    updateClosedDayState(REVISAO.items, REVISAO.closedDays);
+    await sb.from('mp_usuarios').update({ revisao_closed_days: REVISAO.closedDays }).eq('login', _mpUser.login);
+    REVISAO.carregado = true;
+  } catch (e) { console.warn('revisaoCarregar:', e); }
+}
+
+async function revisaoCriarAssunto(titulo, cadeiraNome, notas, dataEstudo) {
+  if (!sb || !_mpUser) return;
+  const reviews = makeReviews(dataEstudo);
+  const { error } = await sb.from('mp_revisoes').insert({
+    usuario_login: _mpUser.login, cadeira_nome: cadeiraNome || null, titulo, notas: notas || '', data_estudo: dataEstudo, reviews
+  });
+  if (error) { mostrarToast('❌ ' + error.message); return; }
+  await revisaoCarregar();
+}
+
+async function revisaoRemoverAssunto(itemId) {
+  if (!sb) return;
+  await sb.from('mp_revisoes').delete().eq('id', itemId);
+  await revisaoCarregar();
+  renderRevisaoTab();
+}
+
+async function revisaoPersistirItem(item) {
+  if (!sb) return;
+  await sb.from('mp_revisoes').update({ reviews: item.reviews, consolidated: item.consolidated }).eq('id', item.id);
+  await sb.from('mp_usuarios').update({ revisao_closed_days: REVISAO.closedDays }).eq('login', _mpUser.login);
+}
+
+function revisaoResponder(itemId, offset, method) {
+  const item = REVISAO.items.find(i => i.id === itemId);
+  if (!item) return;
+  const r = item.reviews.find(rv => rv.offset === offset);
+  if (!r) return;
+  r.status = 'done';
+  r.method = method;
+  recomputeConsolidated(item);
+  updateClosedDayState(REVISAO.items, REVISAO.closedDays);
+  revisaoPersistirItem(item);
+  renderRevisaoTab();
+}
+
+function revisaoAckSecondPass(itemId, offset) {
+  const item = REVISAO.items.find(i => i.id === itemId);
+  if (!item) return;
+  const r = item.reviews.find(rv => rv.offset === offset);
+  if (!r) return;
+  r.secondPassAck = true;
+  revisaoPersistirItem(item);
+  renderRevisaoTab();
+}
+
+async function revisaoSubmeterNovo() {
+  const titulo = document.getElementById('rv-titulo').value.trim();
+  const cadeira = document.getElementById('rv-cadeira').value;
+  const notas = document.getElementById('rv-notas').value;
+  const data = document.getElementById('rv-data').value;
+  if (!titulo || !data) { mostrarToast('⚠️ Preencha ao menos o título e a data.'); return; }
+  await revisaoCriarAssunto(titulo, cadeira, notas, data);
+  document.getElementById('rv-titulo').value = '';
+  document.getElementById('rv-notas').value = '';
+  renderRevisaoTab();
+  mostrarToast('✅ Assunto cadastrado!');
+}
+
+function renderRevisaoHoje() {
+  const today = hojeISO();
+  const actionable = getActionableList(REVISAO.items, today);
+  const second = getSecondPassList(REVISAO.items, today);
+  const streak = computeStreak(REVISAO.closedDays, today);
+  let html = `<div style="margin-bottom:14px;font-size:0.85rem;color:var(--muted);">🔥 Streak: <strong style="color:var(--accent)">${streak} dia${streak === 1 ? '' : 's'}</strong></div>`;
+  if (!actionable.length && !second.length) {
+    html += '<div class="crud-vazio">✅ Nada pendente por agora.</div>';
+    return html;
+  }
+  actionable.forEach(({ item, review, atrasada }) => {
+    html += `<div class="revisao-card">
+      <div class="revisao-card-titulo">${escRv(item.titulo)} ${item.cadeira_nome ? '<span class="revisao-chip">' + escRv(item.cadeira_nome) + '</span>' : ''}</div>
+      <div class="revisao-card-sub">${escRv(reviewLabel(review.offset))} · ${atrasada ? '<span style="color:var(--red)">atrasada</span>' : 'hoje'}</div>
+      <div class="revisao-card-btns">
+        <button class="speed-btn" onclick="revisaoResponder('${item.id}',${review.offset},'ok')">✅ Lembrei bem</button>
+        <button class="speed-btn" onclick="revisaoResponder('${item.id}',${review.offset},'struggle')">🔄 Travei</button>
+      </div>
+    </div>`;
+  });
+  if (second.length) {
+    html += '<h3>2ª passada — itens que você travou</h3>';
+    second.forEach(({ item, review }) => {
+      html += `<div class="revisao-card">
+        <div class="revisao-card-titulo">${escRv(item.titulo)}</div>
+        <div class="revisao-card-btns"><button class="speed-btn" onclick="revisaoAckSecondPass('${item.id}',${review.offset})">Confirmar revisado</button></div>
+      </div>`;
+    });
+  }
+  return html;
+}
+
+function renderRevisaoVisaoGeral() {
+  if (!REVISAO.items.length) return '<div class="crud-vazio">Nenhum assunto cadastrado ainda.</div>';
+  const porCadeira = {};
+  REVISAO.items.forEach(item => {
+    const key = item.cadeira_nome || 'Sem cadeira';
+    porCadeira[key] = porCadeira[key] || { total: 0, consolidados: 0 };
+    porCadeira[key].total++;
+    if (item.consolidated) porCadeira[key].consolidados++;
+  });
+  let html = '<table class="tabela"><tr><th>Cadeira</th><th>Assuntos</th><th>Consolidados</th></tr>';
+  Object.entries(porCadeira).forEach(([nome, c]) => {
+    html += `<tr><td>${escRv(nome)}</td><td>${c.total}</td><td>${c.consolidados}/${c.total}</td></tr>`;
+  });
+  html += '</table>';
+  return html;
+}
+
+function cadeirasDisponiveisOptionsRv() {
+  let opts = '<option value="">— sem cadeira —</option>';
+  CRUD.periodos.forEach(per => per.cadeiras.forEach(c => { opts += `<option value="${escRv(c.nome)}">${escRv(c.nome)}</option>`; }));
+  return opts;
+}
+
+function renderRevisaoAssuntos() {
+  let html = `<div class="revisao-form" style="display:flex;flex-direction:column;gap:8px;margin-bottom:18px;padding:12px;background:var(--surface2);border-radius:8px;">
+    <input type="text" id="rv-titulo" placeholder="Título do assunto">
+    <select id="rv-cadeira">${cadeirasDisponiveisOptionsRv()}</select>
+    <textarea id="rv-notas" placeholder="Notas (opcional)" rows="2"></textarea>
+    <input type="date" id="rv-data" value="${hojeISO()}">
+    <button type="button" class="revisao-abrir-btn" style="margin-top:0;" onclick="revisaoSubmeterNovo()">＋ Cadastrar assunto</button>
+  </div>`;
+  if (!REVISAO.items.length) {
+    html += '<div class="crud-vazio">Nenhum assunto cadastrado ainda.</div>';
+    return html;
+  }
+  REVISAO.items.slice().reverse().forEach(item => {
+    const feitas = item.reviews.filter(r => r.status === 'done').length;
+    const pct = item.reviews.length ? Math.round(feitas / item.reviews.length * 100) : 0;
+    html += `<div class="revisao-card">
+      <div class="revisao-card-titulo">${escRv(item.titulo)}
+        ${item.cadeira_nome ? '<span class="revisao-chip">' + escRv(item.cadeira_nome) + '</span>' : ''}
+        ${item.consolidated ? '<span class="revisao-chip" style="background:var(--green)">consolidado</span>' : ''}
+      </div>
+      <div class="revisao-card-sub">Estudado em ${fmtBRData(item.data_estudo)} · ${pct}% das revisões feitas</div>
+      ${item.notas ? '<div class="revisao-card-notas">' + escRv(item.notas) + '</div>' : ''}
+      <button class="speed-btn" onclick="revisaoRemoverAssunto('${item.id}')" style="color:var(--red);margin-top:6px;">🗑 Remover</button>
+    </div>`;
+  });
+  return html;
+}
+
+let revisaoTabAtual = 'hoje';
+function renderRevisaoTab() {
+  const content = document.getElementById('revisao-content');
+  if (!content) return;
+  document.querySelectorAll('.revisao-tab-btn').forEach(b => b.classList.toggle('ativo', b.dataset.tab === revisaoTabAtual));
+  if (revisaoTabAtual === 'hoje') content.innerHTML = renderRevisaoHoje();
+  else if (revisaoTabAtual === 'visao') content.innerHTML = renderRevisaoVisaoGeral();
+  else content.innerHTML = renderRevisaoAssuntos();
+}
+function revisaoMudarTab(tab) { revisaoTabAtual = tab; renderRevisaoTab(); }
+
+async function abrirRevisao() {
+  if (!_mpUser) return;
+  document.getElementById('revisao-modal').classList.add('aberto');
+  revisaoTabAtual = 'hoje';
+  document.getElementById('revisao-content').innerHTML = '<div class="crud-vazio">Carregando…</div>';
+  await revisaoCarregar();
+  renderRevisaoTab();
+}
+function fecharRevisao() {
+  document.getElementById('revisao-modal').classList.remove('aberto');
+}
+
 // ── Iniciar o app ──
 function iniciarApp() {
   diagRegistrar('iniciarApp', 'iniciando, build=' + BUILD_VERSAO);
@@ -6834,6 +7170,7 @@ document.addEventListener('DOMContentLoaded', async function() {
   for(let i=0;i<5;i++){const e=document.getElementById('cadeira-'+i);if(e)e.style.display='none';}
   document.getElementById('crud-modal').addEventListener('click',function(e){if(e.target===this)crudFechar();});
   document.getElementById('mp-admin-overlay').addEventListener('click',function(e){if(e.target===this)mpFecharAdmin();});
+  document.getElementById('revisao-modal').addEventListener('click',function(e){if(e.target===this)fecharRevisao();});
   iniciarApp();
 });
 </script>
